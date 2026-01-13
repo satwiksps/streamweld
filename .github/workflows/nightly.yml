@@ -1,0 +1,52 @@
+name: Chaos and benchmarks
+
+on:
+  schedule:
+    - cron: "43 2 * * *"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chaos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  chaos:
+    name: Deterministic chaos suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - id: suite
+        name: Detect the chaos harness
+        shell: bash
+        run: |
+          if test -d test/chaos && find test/chaos -type f -name '*_test.go' -print -quit | grep -q .; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "The chaos harness is not present in this build phase."
+          fi
+      - if: steps.suite.outputs.enabled == 'true'
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - if: steps.suite.outputs.enabled == 'true'
+        uses: helm/kind-action@v1.14.0
+      - if: steps.suite.outputs.enabled == 'true'
+        run: make chaos
+      - if: steps.suite.outputs.enabled == 'true'
+        run: make bench
+      - if: steps.suite.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: benchmark-results
+          path: |
+            benchmarks/results.md
+            benchmarks/results.json
+          if-no-files-found: error
