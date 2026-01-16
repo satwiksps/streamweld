@@ -471,6 +471,9 @@ The proxy uses an incremental SSE parser, not line-oriented JSON scanning:
   producer-failure trigger.
 - A UTF-8 byte sequence split across socket reads is buffered until complete.
   Invalid UTF-8 is a producer error; its bytes are never journaled as text.
+- A frame whose non-delimiter wire content exceeds `sse.max_event_bytes` is a
+  producer error with reason `sse_event_too_large`. The default is 1MiB and the
+  bound applies to recognized fields, comments, and unknown fields alike.
 
 One upstream SSE event yields at most one chunk entry. Buffering and seam
 rewriting may delay it, but the proxy never exposes half an SSE event.
@@ -719,6 +722,7 @@ Defaults are:
 | `policy.allow_cross_version` | false |
 | `policy.seam_window` | 64 bytes |
 | `backend.quarantine_window` | 5s |
+| `sse.max_event_bytes` | 1MiB |
 
 `migrations_used` counts continuation attempts that were dispatched, including
 an attempt that failed before producing a chunk. `elapsed` starts when `open`
