@@ -21,4 +21,20 @@ Run the repository checks with:
 make test
 ```
 
+## Local passthrough proxy
+
+Start any OpenAI-compatible backend on port 8000, then run:
+
+```sh
+go run ./cmd/streamweld-proxy --backend http://127.0.0.1:8000 --listen :8080
+```
+
+The proxy currently accepts `POST /v1/chat/completions`, `POST /v1/completions`, and `GET /v1/models`. Streaming response bytes are forwarded and flushed as they arrive; request bodies and backend-specific JSON fields are not rewritten. Health probes are available at `/healthz` and `/readyz`.
+
+```sh
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"your-model","messages":[{"role":"user","content":"Count to five."}],"stream":true}'
+```
+
 Streamweld is licensed under Apache-2.0.
