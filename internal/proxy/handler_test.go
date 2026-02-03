@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/streamweld/streamweld/internal/proxy/sse"
 )
 
 func TestPassthroughPreservesRequestAndResponse(t *testing.T) {
@@ -343,12 +345,13 @@ func TestUpstreamFailureReturnsStructuredBadGatewayAndJSONLog(t *testing.T) {
 
 func TestStreamingResponseIsFlushedPromptly(t *testing.T) {
 	t.Parallel()
-	firstChunk := []byte("data: {\"delta\":\"first\"}\n\n")
+	firstChunk := []byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"first\"}}]}\n\n")
 	secondChunk := []byte("data: [DONE]\n\n")
 	firstSent := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	defer releaseOnce.Do(func() { close(release) })
 
 	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -378,41 +381,56 @@ func TestStreamingResponseIsFlushedPromptly(t *testing.T) {
 	}()
 	<-firstSent
 
+	decoder := sse.NewDecoder(response.Body)
 	readResult := make(chan struct {
-		data []byte
-		err  error
+		events []sse.Event
+		err    error
 	}, 1)
 	go func() {
-		data := make([]byte, len(firstChunk))
-		_, err := io.ReadFull(response.Body, data)
+		events := make([]sse.Event, 0, 2)
+		for range 2 {
+			event, decodeErr := decoder.Decode()
+			if decodeErr != nil {
+				readResult <- struct {
+					events []sse.Event
+					err    error
+				}{events, decodeErr}
+				return
+			}
+			events = append(events, event)
+		}
 		readResult <- struct {
-			data []byte
-			err  error
-		}{data, err}
+			events []sse.Event
+			err    error
+		}{events, nil}
 	}()
 	select {
 	case result := <-readResult:
 		if result.err != nil {
-			t.Fatalf("read first streamed chunk: %v", result.err)
+			t.Fatalf("read initial durable events: %v", result.err)
 		}
-		if !bytes.Equal(result.data, firstChunk) {
-			t.Fatalf("first chunk changed: got %q, want %q", result.data, firstChunk)
+		if result.events[0].Type != streamOpenEvent {
+			t.Fatalf("first event type = %q, want %q", result.events[0].Type, streamOpenEvent)
+		}
+		if !bytes.Contains(result.events[1].Data, []byte(`"content":"first"`)) {
+			t.Fatalf("first chunk data changed: %q", result.events[1].Data)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("first upstream chunk was not flushed to the client")
 	}
 
 	releaseOnce.Do(func() { close(release) })
-	remainder, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatalf("read stream remainder: %v", err)
+	doneEvent, err := decoder.Decode()
+	if err != nil || doneEvent.Type != streamDoneEvent {
+		t.Fatalf("done event = %+v, error = %v", doneEvent, err)
 	}
-	if !bytes.Equal(remainder, secondChunk) {
-		t.Errorf("stream remainder changed: got %q, want %q", remainder, secondChunk)
+	sentinel, err := decoder.Decode()
+	if err != nil || string(sentinel.Data) != "[DONE]" {
+		t.Fatalf("done sentinel = %+v, error = %v", sentinel, err)
 	}
 }
 
-func TestClientCancellationPropagatesUpstream(t *testing.T) {
+func TestClientCancellationDoesNotStopProducer(t *testing.T) {
 	t.Parallel()
 	transport := newBlockingRoundTripper()
 	t.Cleanup(transport.Release)
@@ -433,9 +451,10 @@ func TestClientCancellationPropagatesUpstream(t *testing.T) {
 	cancel()
 	select {
 	case <-transport.canceled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("client cancellation was not propagated upstream")
+		t.Fatal("client cancellation incorrectly canceled the stream-owned producer")
+	case <-time.After(100 * time.Millisecond):
 	}
+	transport.Release()
 	select {
 	case <-result:
 	case <-time.After(2 * time.Second):

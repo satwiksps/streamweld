@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/streamweld/streamweld/internal/journal"
 )
 
 // Option customizes a Server without expanding its core configuration surface.
@@ -19,6 +21,14 @@ type Option func(*serverOptions) error
 type serverOptions struct {
 	transport        http.RoundTripper
 	readinessChecker ReadinessChecker
+	journal          journal.Journal
+	ids              StreamIDGenerator
+	idempotency      journal.IdempotencyRegistry
+}
+
+// StreamIDGenerator supplies collision-resistant stream identifiers.
+type StreamIDGenerator interface {
+	New() (journal.StreamID, error)
 }
 
 // WithReadinessChecker supplies the policy used by /readyz. Backend pools can
@@ -45,6 +55,41 @@ func WithTransport(transport http.RoundTripper) Option {
 	}
 }
 
+// WithJournal supplies the durable journal implementation. The default is a
+// bounded in-memory journal intended for a single proxy replica.
+func WithJournal(backend journal.Journal) Option {
+	return func(options *serverOptions) error {
+		if backend == nil {
+			return errors.New("journal cannot be nil")
+		}
+		options.journal = backend
+		return nil
+	}
+}
+
+// WithStreamIDGenerator supplies stream identities, primarily for deterministic
+// tests. Production callers normally use the cryptographic default.
+func WithStreamIDGenerator(generator StreamIDGenerator) Option {
+	return func(options *serverOptions) error {
+		if generator == nil {
+			return errors.New("stream ID generator cannot be nil")
+		}
+		options.ids = generator
+		return nil
+	}
+}
+
+// WithIdempotencyRegistry supplies the key-to-stream registry.
+func WithIdempotencyRegistry(registry journal.IdempotencyRegistry) Option {
+	return func(options *serverOptions) error {
+		if registry == nil {
+			return errors.New("idempotency registry cannot be nil")
+		}
+		options.idempotency = registry
+		return nil
+	}
+}
+
 // Server is an OpenAI-compatible passthrough proxy with graceful lifecycle
 // management. Its Handler can be embedded in an existing HTTP server for tests.
 type Server struct {
@@ -56,6 +101,7 @@ type Server struct {
 	logger      *slog.Logger
 	forceCancel context.CancelFunc
 	readiness   *readinessGate
+	durable     *durableService
 }
 
 // NewServer validates config and constructs a proxy without opening a listener.
@@ -86,10 +132,37 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 	if settings.readinessChecker == nil {
 		settings.readinessChecker = newBackendReadinessChecker(target, settings.transport, config.ReadinessTimeout)
 	}
+	if settings.journal == nil {
+		memoryConfig := journal.DefaultConfig()
+		memoryConfig.TTL = config.JournalTTL
+		memoryConfig.MaxBytesPerStream = config.JournalMaxBytesPerStream
+		memoryConfig.MaxTotalBytes = config.JournalMaxTotalBytes
+		memoryConfig.ReaderMaxLagBytes = config.ReaderMaxLagBytes
+		settings.journal, err = journal.NewMemory(memoryConfig)
+		if err != nil {
+			return nil, fmt.Errorf("create memory journal: %w", err)
+		}
+	}
+	if settings.ids == nil {
+		settings.ids = journal.NewIDGenerator(nil, nil)
+	}
+	if settings.idempotency == nil {
+		settings.idempotency = journal.NewMemoryIdempotencyRegistry(nil)
+	}
 
 	readiness := newReadinessGate(settings.readinessChecker)
-	handler := newHandler(target, settings.transport, readiness, logger)
 	serverContext, forceCancel := context.WithCancel(context.Background())
+	durable := newDurableService(
+		serverContext,
+		config,
+		target,
+		settings.transport,
+		settings.journal,
+		settings.ids,
+		settings.idempotency,
+		logger,
+	)
+	handler := newHandler(target, settings.transport, readiness, durable, logger)
 	httpServer := &http.Server{
 		Addr:              config.ListenAddress,
 		Handler:           handler,
@@ -111,6 +184,7 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		logger:      logger,
 		forceCancel: forceCancel,
 		readiness:   readiness,
+		durable:     durable,
 	}, nil
 }
 
@@ -192,9 +266,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return errors.New("shutdown context cannot be nil")
 	}
 	s.readiness.BeginShutdown()
-	err := s.httpServer.Shutdown(ctx)
+	httpErr := s.httpServer.Shutdown(ctx)
+	producerErr := s.durable.wait(ctx)
 	s.closeIdleConnections()
-	return err
+	return errors.Join(httpErr, producerErr)
 }
 
 func (s *Server) closeIdleConnections() {

@@ -34,6 +34,12 @@ func TestConfigValidate(t *testing.T) {
 		{"zero readiness timeout", func(c *Config) { c.ReadinessTimeout = 0 }, "readiness timeout must be positive"},
 		{"negative response timeout", func(c *Config) { c.ResponseHeaderTimeout = -time.Second }, "response header timeout cannot be negative"},
 		{"zero max header bytes", func(c *Config) { c.MaxHeaderBytes = 0 }, "max header bytes must be positive"},
+		{"zero max request bytes", func(c *Config) { c.MaxRequestBytes = 0 }, "max request bytes must be positive"},
+		{"zero journal TTL", func(c *Config) { c.JournalTTL = 0 }, "journal TTL must be positive"},
+		{"zero stream journal cap", func(c *Config) { c.JournalMaxBytesPerStream = 0 }, "journal max bytes per stream must be positive"},
+		{"stream cap exceeds total", func(c *Config) { c.JournalMaxTotalBytes = 1 }, "cannot exceed total bytes"},
+		{"zero reader lag cap", func(c *Config) { c.ReaderMaxLagBytes = 0 }, "reader max lag bytes must be positive"},
+		{"invalid orphan policy", func(c *Config) { c.OrphanPolicy = "finish_later" }, "orphan policy must be"},
 	}
 
 	for _, test := range tests {
@@ -76,6 +82,13 @@ func TestConfigFromEnv(t *testing.T) {
 		"STREAMWELD_RESPONSE_HEADER_TIMEOUT":          "8s",
 		"STREAMWELD_UPSTREAM_IDLE_CONNECTION_TIMEOUT": "9s",
 		"STREAMWELD_MAX_HEADER_BYTES":                 "12345",
+		"STREAMWELD_MAX_REQUEST_BYTES":                "23456",
+		"STREAMWELD_JOURNAL_TTL":                      "11m",
+		"STREAMWELD_JOURNAL_MAX_BYTES_PER_STREAM":     "34567",
+		"STREAMWELD_JOURNAL_MAX_TOTAL_BYTES":          "45678",
+		"STREAMWELD_READER_MAX_LAG_BYTES":             "5678",
+		"STREAMWELD_ORPHAN_POLICY":                    "cancel_after",
+		"STREAMWELD_ORPHAN_TIMEOUT":                   "12s",
 	}
 	config, err := ConfigFromEnv(mapLookup(values))
 	if err != nil {
@@ -101,6 +114,12 @@ func TestConfigFromEnv(t *testing.T) {
 	if config.MaxHeaderBytes != 12345 {
 		t.Errorf("MaxHeaderBytes = %d, want 12345", config.MaxHeaderBytes)
 	}
+	if config.MaxRequestBytes != 23456 || config.JournalMaxBytesPerStream != 34567 || config.JournalMaxTotalBytes != 45678 || config.ReaderMaxLagBytes != 5678 {
+		t.Errorf("size environment values not applied: %+v", config)
+	}
+	if config.JournalTTL != 11*time.Minute || config.OrphanPolicy != OrphanCancelAfter || config.OrphanTimeout != 12*time.Second {
+		t.Errorf("durability environment values not applied: %+v", config)
+	}
 }
 
 func TestConfigFromEnvRejectsMalformedValues(t *testing.T) {
@@ -108,6 +127,7 @@ func TestConfigFromEnvRejectsMalformedValues(t *testing.T) {
 	for _, values := range []map[string]string{
 		{"STREAMWELD_DIAL_TIMEOUT": "soon"},
 		{"STREAMWELD_MAX_HEADER_BYTES": "many"},
+		{"STREAMWELD_JOURNAL_MAX_TOTAL_BYTES": "limitless"},
 	} {
 		if _, err := ConfigFromEnv(mapLookup(values)); err == nil {
 			t.Fatalf("ConfigFromEnv(%v) returned nil error", values)

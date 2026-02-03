@@ -20,9 +20,16 @@ const immediateFlushInterval = -1
 type Handler struct {
 	upstream  *httputil.ReverseProxy
 	readiness *readinessGate
+	durable   *durableService
 }
 
-func newHandler(target *url.URL, transport http.RoundTripper, readiness *readinessGate, logger *slog.Logger) *Handler {
+func newHandler(
+	target *url.URL,
+	transport http.RoundTripper,
+	readiness *readinessGate,
+	durable *durableService,
+	logger *slog.Logger,
+) *Handler {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(target)
@@ -48,7 +55,7 @@ func newHandler(target *url.URL, transport http.RoundTripper, readiness *readine
 		writeAPIError(writer, http.StatusBadGateway, "bad_gateway", "the upstream backend could not complete the request")
 	}
 
-	return &Handler{upstream: proxy, readiness: readiness}
+	return &Handler{upstream: proxy, readiness: readiness, durable: durable}
 }
 
 // ServeHTTP dispatches only the OpenAI endpoints supported during Phase 1.
@@ -68,13 +75,17 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 	case "/v1/chat/completions", "/v1/completions":
 		if requireMethod(writer, request, http.MethodPost) {
-			h.upstream.ServeHTTP(writer, request)
+			h.handleCompletion(writer, request)
 		}
 	case "/v1/models":
 		if requireMethod(writer, request, http.MethodGet) {
 			h.upstream.ServeHTTP(writer, request)
 		}
 	default:
+		if strings.HasPrefix(request.URL.Path, "/v1/streams/") {
+			h.handleStreamRoute(writer, request)
+			return
+		}
 		writeAPIError(writer, http.StatusNotFound, "not_found", "the requested endpoint is not supported")
 	}
 }

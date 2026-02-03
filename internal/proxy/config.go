@@ -21,6 +21,25 @@ const (
 	defaultTLSHandshakeTimeout = 10 * time.Second
 	defaultUpstreamIdleTimeout = 90 * time.Second
 	defaultMaxHeaderBytes      = 1 << 20
+	defaultMaxRequestBytes     = 8 << 20
+	defaultJournalTTL          = 10 * time.Minute
+	defaultJournalStreamBytes  = 4 << 20
+	defaultJournalTotalBytes   = 256 << 20
+	defaultReaderLagBytes      = 1 << 20
+	defaultOrphanTimeout       = 60 * time.Second
+)
+
+// OrphanPolicy controls what happens to a producer after its final reader
+// disconnects. A disconnect is never treated as an explicit stop.
+type OrphanPolicy string
+
+const (
+	// OrphanContinue lets generation continue with zero attached readers.
+	OrphanContinue OrphanPolicy = "continue"
+	// OrphanCancelAfter cancels generation after the reattachment grace period.
+	OrphanCancelAfter OrphanPolicy = "cancel_after"
+	// OrphanCancel cancels generation as soon as the final reader disconnects.
+	OrphanCancel OrphanPolicy = "cancel"
 )
 
 // Config contains the process and upstream transport settings for a proxy.
@@ -39,6 +58,13 @@ type Config struct {
 	ResponseHeaderTimeout         time.Duration
 	UpstreamIdleConnectionTimeout time.Duration
 	MaxHeaderBytes                int
+	MaxRequestBytes               int64
+	JournalTTL                    time.Duration
+	JournalMaxBytesPerStream      int64
+	JournalMaxTotalBytes          int64
+	ReaderMaxLagBytes             int64
+	OrphanPolicy                  OrphanPolicy
+	OrphanTimeout                 time.Duration
 }
 
 // DefaultConfig returns production-safe listener and transport defaults. A
@@ -54,6 +80,13 @@ func DefaultConfig() Config {
 		TLSHandshakeTimeout:           defaultTLSHandshakeTimeout,
 		UpstreamIdleConnectionTimeout: defaultUpstreamIdleTimeout,
 		MaxHeaderBytes:                defaultMaxHeaderBytes,
+		MaxRequestBytes:               defaultMaxRequestBytes,
+		JournalTTL:                    defaultJournalTTL,
+		JournalMaxBytesPerStream:      defaultJournalStreamBytes,
+		JournalMaxTotalBytes:          defaultJournalTotalBytes,
+		ReaderMaxLagBytes:             defaultReaderLagBytes,
+		OrphanPolicy:                  OrphanContinue,
+		OrphanTimeout:                 defaultOrphanTimeout,
 	}
 }
 
@@ -84,6 +117,8 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 		{"STREAMWELD_TLS_HANDSHAKE_TIMEOUT", &cfg.TLSHandshakeTimeout},
 		{"STREAMWELD_RESPONSE_HEADER_TIMEOUT", &cfg.ResponseHeaderTimeout},
 		{"STREAMWELD_UPSTREAM_IDLE_CONNECTION_TIMEOUT", &cfg.UpstreamIdleConnectionTimeout},
+		{"STREAMWELD_JOURNAL_TTL", &cfg.JournalTTL},
+		{"STREAMWELD_ORPHAN_TIMEOUT", &cfg.OrphanTimeout},
 	}
 	for _, item := range durations {
 		value, ok := lookup(item.name)
@@ -103,6 +138,29 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("parse STREAMWELD_MAX_HEADER_BYTES: %w", err)
 		}
 		cfg.MaxHeaderBytes = parsed
+	}
+	int64Values := []struct {
+		name string
+		dst  *int64
+	}{
+		{"STREAMWELD_MAX_REQUEST_BYTES", &cfg.MaxRequestBytes},
+		{"STREAMWELD_JOURNAL_MAX_BYTES_PER_STREAM", &cfg.JournalMaxBytesPerStream},
+		{"STREAMWELD_JOURNAL_MAX_TOTAL_BYTES", &cfg.JournalMaxTotalBytes},
+		{"STREAMWELD_READER_MAX_LAG_BYTES", &cfg.ReaderMaxLagBytes},
+	}
+	for _, item := range int64Values {
+		value, ok := lookup(item.name)
+		if !ok {
+			continue
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse %s: %w", item.name, err)
+		}
+		*item.dst = parsed
+	}
+	if value, ok := lookup("STREAMWELD_ORPHAN_POLICY"); ok {
+		cfg.OrphanPolicy = OrphanPolicy(value)
 	}
 
 	return cfg, nil
@@ -129,6 +187,8 @@ func (c Config) Validate() error {
 		{"dial timeout", c.DialTimeout},
 		{"TLS handshake timeout", c.TLSHandshakeTimeout},
 		{"upstream idle connection timeout", c.UpstreamIdleConnectionTimeout},
+		{"journal TTL", c.JournalTTL},
+		{"orphan timeout", c.OrphanTimeout},
 	}
 	for _, item := range positiveDurations {
 		if item.value <= 0 {
@@ -141,8 +201,32 @@ func (c Config) Validate() error {
 	if c.MaxHeaderBytes <= 0 {
 		problems = append(problems, errors.New("max header bytes must be positive"))
 	}
+	positiveSizes := []struct {
+		name  string
+		value int64
+	}{
+		{"max request bytes", c.MaxRequestBytes},
+		{"journal max bytes per stream", c.JournalMaxBytesPerStream},
+		{"journal max total bytes", c.JournalMaxTotalBytes},
+		{"reader max lag bytes", c.ReaderMaxLagBytes},
+	}
+	for _, item := range positiveSizes {
+		if item.value <= 0 {
+			problems = append(problems, fmt.Errorf("%s must be positive", item.name))
+		}
+	}
+	if c.JournalMaxBytesPerStream > c.JournalMaxTotalBytes {
+		problems = append(problems, errors.New("journal max bytes per stream cannot exceed total bytes"))
+	}
+	if !c.OrphanPolicy.valid() {
+		problems = append(problems, fmt.Errorf("orphan policy must be continue, cancel_after, or cancel, got %q", c.OrphanPolicy))
+	}
 
 	return errors.Join(problems...)
+}
+
+func (policy OrphanPolicy) valid() bool {
+	return policy == OrphanContinue || policy == OrphanCancelAfter || policy == OrphanCancel
 }
 
 func parseBackendURL(raw string) (*url.URL, error) {

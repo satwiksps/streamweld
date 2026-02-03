@@ -981,9 +981,9 @@ The principal defaults are:
 | `migration.stall_timeout` | 30s, detector disabled |
 | `backend.quarantine_window` | 5s |
 
-`journal.max_total_bytes` and `reader.max_lag_bytes` are mandatory positive
-deployment values in memory-backed production-like configurations; their
-defaults are deployment concerns rather than wire-protocol constants.
+`journal.max_total_bytes` and `reader.max_lag_bytes` MUST be positive. The
+standalone proxy defaults them to `256MiB` and `1MiB`; deployment manifests
+render both values explicitly.
 
 ## 17. Conformance checklist
 

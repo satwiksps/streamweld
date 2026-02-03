@@ -41,6 +41,13 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	flags.DurationVar(&config.ResponseHeaderTimeout, "response-header-timeout", config.ResponseHeaderTimeout, "upstream response-header timeout; zero disables it")
 	flags.DurationVar(&config.UpstreamIdleConnectionTimeout, "upstream-idle-connection-timeout", config.UpstreamIdleConnectionTimeout, "upstream keep-alive idle timeout")
 	flags.IntVar(&config.MaxHeaderBytes, "max-header-bytes", config.MaxHeaderBytes, "maximum incoming request-header size")
+	flags.Int64Var(&config.MaxRequestBytes, "max-request-bytes", config.MaxRequestBytes, "maximum completion request-body size")
+	flags.DurationVar(&config.JournalTTL, "journal-ttl", config.JournalTTL, "retention time for terminal stream journals")
+	flags.Int64Var(&config.JournalMaxBytesPerStream, "journal-max-bytes-per-stream", config.JournalMaxBytesPerStream, "memory journal byte cap per stream")
+	flags.Int64Var(&config.JournalMaxTotalBytes, "journal-max-total-bytes", config.JournalMaxTotalBytes, "memory journal global byte cap")
+	flags.Int64Var(&config.ReaderMaxLagBytes, "reader-max-lag-bytes", config.ReaderMaxLagBytes, "maximum queued bytes for one stream reader")
+	flags.Var(orphanPolicyValue{value: &config.OrphanPolicy}, "orphan-policy", "producer policy after the final reader disconnects: continue, cancel_after, or cancel")
+	flags.DurationVar(&config.OrphanTimeout, "orphan-timeout", config.OrphanTimeout, "reattachment grace period for cancel_after")
 	flags.StringVar(&logLevel, "log-level", logLevel, "JSON log level: debug, info, warn, or error")
 	flags.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: streamweld-proxy --backend URL [options]\n\nOptions:\n")
@@ -83,6 +90,25 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	}
 	_ = stdout // Reserved for command output; operational logs remain on stderr.
 	return 0
+}
+
+type orphanPolicyValue struct {
+	value *proxy.OrphanPolicy
+}
+
+func (v orphanPolicyValue) String() string {
+	if v.value == nil {
+		return ""
+	}
+	return string(*v.value)
+}
+
+func (v orphanPolicyValue) Set(value string) error {
+	if v.value == nil {
+		return errors.New("orphan policy destination is nil")
+	}
+	*v.value = proxy.OrphanPolicy(value)
+	return nil
 }
 
 func newShutdownContext(
