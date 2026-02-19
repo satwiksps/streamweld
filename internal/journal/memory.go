@@ -76,6 +76,7 @@ type storedEntry struct {
 }
 
 type tailReader struct {
+	deliveryMu   sync.Mutex
 	id           uint64
 	stream       *memoryStream
 	out          chan Entry
@@ -506,7 +507,11 @@ func (m *Memory) trimStreamLocked(stream *memoryStream, count int) {
 func (m *Memory) publishLocked(stream *memoryStream, size int64) {
 	for _, reader := range stream.tails {
 		reader.liveLag += size
-		if reader.liveLag > m.config.ReaderMaxLagBytes {
+		// The entry currently handed to the reader goroutine is no longer in
+		// the journal-to-reader backlog, even if that goroutine has not yet
+		// reacquired m.mu to finish its bookkeeping.
+		effectiveLag := reader.liveLag - reader.inFlightSize
+		if effectiveLag > m.config.ReaderMaxLagBytes {
 			m.stopTailLocked(reader, ErrReaderLagged, true)
 			continue
 		}
@@ -561,11 +566,18 @@ func (m *Memory) runTail(ctx context.Context, reader *tailReader) {
 			reader.inFlightSize = stored.size
 			m.mu.Unlock()
 
+			reader.deliveryMu.Lock()
+			canceled := false
 			select {
 			case reader.out <- entry:
 			case <-reader.done:
+				reader.deliveryMu.Unlock()
 				return
 			case <-ctx.Done():
+				canceled = true
+			}
+			reader.deliveryMu.Unlock()
+			if canceled {
 				m.mu.Lock()
 				m.stopTailLocked(reader, nil, true)
 				m.mu.Unlock()
@@ -623,6 +635,15 @@ func (m *Memory) stopTailLocked(reader *tailReader, reason error, discard bool) 
 	reader.discard = discard
 	delete(reader.stream.tails, reader.id)
 	close(reader.done)
+	if discard {
+		reader.deliveryMu.Lock()
+		select {
+		case <-reader.out:
+		default:
+		}
+		reader.deliveryMu.Unlock()
+		reader.discard = false
+	}
 }
 
 func (m *Memory) finishTail(reader *tailReader) {
