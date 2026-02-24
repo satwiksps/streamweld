@@ -318,7 +318,7 @@ func (pool *Pool) SetHealth(id ID, health Health) (Transition, error) {
 		pool.notifyLocked(record)
 	}
 	transition := Transition{Backend: pool.stateLocked(record, now), Changed: changed}
-	if oldHealth == HealthHealthy && health != HealthHealthy {
+	if health != HealthHealthy && len(record.leases) != 0 {
 		transition.Bindings = bindingsLocked(record)
 	}
 	return transition, nil
