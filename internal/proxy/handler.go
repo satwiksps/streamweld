@@ -15,21 +15,17 @@ import (
 
 const immediateFlushInterval = -1
 
-// Handler owns Phase 1's public HTTP surface. Keeping routing separate from the
-// reverse proxy leaves generation handlers replaceable when journaling is added.
+// Handler owns the public and administrative HTTP routing surface.
 type Handler struct {
-	upstream  *httputil.ReverseProxy
 	readiness *readinessGate
 	durable   *durableService
 }
 
-func newHandler(
-	target *url.URL,
-	transport http.RoundTripper,
-	readiness *readinessGate,
-	durable *durableService,
-	logger *slog.Logger,
-) *Handler {
+func newHandler(readiness *readinessGate, durable *durableService) *Handler {
+	return &Handler{readiness: readiness, durable: durable}
+}
+
+func newReverseProxy(target *url.URL, transport http.RoundTripper, logger *slog.Logger) *httputil.ReverseProxy {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(target)
@@ -55,11 +51,29 @@ func newHandler(
 		writeAPIError(writer, http.StatusBadGateway, "bad_gateway", "the upstream backend could not complete the request")
 	}
 
-	return &Handler{upstream: proxy, readiness: readiness, durable: durable}
+	return proxy
 }
 
-// ServeHTTP dispatches only the OpenAI endpoints supported during Phase 1.
+func (h *Handler) proxyTo(writer http.ResponseWriter, request *http.Request, target *url.URL) {
+	newReverseProxy(target, h.durable.transport, h.durable.logger).ServeHTTP(writer, request)
+}
+
+func (h *Handler) proxyFromPool(writer http.ResponseWriter, request *http.Request) {
+	lease, err := h.durable.backends.Acquire("passthrough:" + request.Method + ":" + request.URL.Path)
+	if err != nil {
+		writeAPIError(writer, http.StatusServiceUnavailable, "no_healthy_backend", "no healthy backend can serve the request")
+		return
+	}
+	defer lease.Release()
+	h.proxyTo(writer, request, lease.Backend().URL)
+}
+
+// ServeHTTP dispatches OpenAI-compatible data-plane and Streamweld endpoints.
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if strings.HasPrefix(request.URL.Path, "/internal/backends/") {
+		h.handleBackendDrainRoute(writer, request)
+		return
+	}
 	switch request.URL.Path {
 	case "/healthz":
 		if requireMethod(writer, request, http.MethodGet) {
@@ -79,7 +93,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 	case "/v1/models":
 		if requireMethod(writer, request, http.MethodGet) {
-			h.upstream.ServeHTTP(writer, request)
+			h.proxyFromPool(writer, request)
 		}
 	default:
 		if strings.HasPrefix(request.URL.Path, "/v1/streams/") {

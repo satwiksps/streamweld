@@ -48,6 +48,18 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	flags.Int64Var(&config.ReaderMaxLagBytes, "reader-max-lag-bytes", config.ReaderMaxLagBytes, "maximum queued bytes for one stream reader")
 	flags.Var(orphanPolicyValue{value: &config.OrphanPolicy}, "orphan-policy", "producer policy after the final reader disconnects: continue, cancel_after, or cancel")
 	flags.DurationVar(&config.OrphanTimeout, "orphan-timeout", config.OrphanTimeout, "reattachment grace period for cancel_after")
+	flags.DurationVar(&config.BackendHealthInterval, "backend-health-interval", config.BackendHealthInterval, "interval between active backend health probes")
+	flags.DurationVar(&config.BackendQuarantineWindow, "backend-quarantine-window", config.BackendQuarantineWindow, "passive-failure backend quarantine period")
+	flags.IntVar(&config.MaxMigrations, "max-migrations", config.MaxMigrations, "maximum continuation attempts per stream")
+	flags.Uint64Var(&config.MaxMigrationTokens, "max-migration-tokens", config.MaxMigrationTokens, "maximum emitted tokens eligible for continuation")
+	flags.DurationVar(&config.MaxStreamDuration, "max-stream-duration", config.MaxStreamDuration, "maximum stream age eligible for continuation")
+	flags.BoolVar(&config.AllowCrossVersion, "allow-cross-version", config.AllowCrossVersion, "allow continuation across unequal model versions")
+	flags.BoolVar(&config.AllowStructuredResume, "allow-structured-resume", config.AllowStructuredResume, "allow validated JSON-prefix continuation")
+	flags.IntVar(&config.SeamWindowBytes, "seam-window-bytes", config.SeamWindowBytes, "leading continuation bytes held for overlap removal")
+	flags.Var((*stringValue)(&config.TemplateMode), "template-mode", "chat-template policy: strict or permissive")
+	flags.BoolVar(&config.StallDetectionEnabled, "stall-detection", config.StallDetectionEnabled, "enable inter-token stall migration")
+	flags.DurationVar(&config.StallTimeout, "stall-timeout", config.StallTimeout, "inter-token stall threshold when enabled")
+	flags.IntVar(&config.MaxSSEEventBytes, "max-sse-event-bytes", config.MaxSSEEventBytes, "maximum complete upstream SSE frame size")
 	flags.StringVar(&logLevel, "log-level", logLevel, "JSON log level: debug, info, warn, or error")
 	flags.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: streamweld-proxy --backend URL [options]\n\nOptions:\n")
@@ -94,6 +106,23 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 
 type orphanPolicyValue struct {
 	value *proxy.OrphanPolicy
+}
+
+type stringValue string
+
+func (v *stringValue) String() string {
+	if v == nil {
+		return ""
+	}
+	return string(*v)
+}
+
+func (v *stringValue) Set(value string) error {
+	if v == nil {
+		return errors.New("string flag destination is nil")
+	}
+	*v = stringValue(value)
+	return nil
 }
 
 func (v orphanPolicyValue) String() string {

@@ -38,6 +38,13 @@ delivery and can be replayed from an exclusive cursor. Unknown JSON request
 fields survive normalization. Health probes are available at `/healthz` and
 `/readyz`.
 
+When the configured pool contains a compatible healthy target, an unexpected
+producer EOF, reset, 5xx, error chunk, failed health probe, explicit backend
+drain, or enabled stall detector starts a bounded continuation attempt. The
+proxy journals the handoff before continuation chunks and removes only a
+UTF-8-safe leading overlap. Migration remains disabled for unknown or unsafe
+chat-template verdicts under the default strict policy.
+
 ```sh
 curl -N http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
@@ -56,6 +63,12 @@ Only an explicit stop cancels generation:
 
 ```sh
 curl -X POST http://127.0.0.1:8080/v1/streams/STREAM_ID/stop
+```
+
+Drain one registered backend and wait for its leases to reach zero:
+
+```sh
+curl -X POST 'http://127.0.0.1:8080/internal/backends/127.0.0.1%3A8000/drain?timeout=10s'
 ```
 
 The default memory journal is bounded and intended for one proxy replica.

@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/streamweld/streamweld/internal/backend"
 	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/streamweld/streamweld/internal/migrate"
 	"github.com/streamweld/streamweld/internal/proxy/sse"
 )
 
@@ -39,6 +40,7 @@ type durableService struct {
 	ids         streamIDSource
 	idempotency journal.IdempotencyRegistry
 	logger      *slog.Logger
+	backends    *backend.Pool
 
 	createMu sync.Mutex
 	streams  sync.Map // journal.StreamID -> *streamRuntime
@@ -46,13 +48,26 @@ type durableService struct {
 }
 
 type streamRuntime struct {
-	service       *durableService
-	id            journal.StreamID
-	endpoint      string
-	requestBody   []byte
-	requestHeader http.Header
-	orphanPolicy  OrphanPolicy
-	idemDigest    *journal.IdempotencyDigest
+	service         *durableService
+	id              journal.StreamID
+	endpoint        string
+	requestBody     []byte
+	requestHeader   http.Header
+	orphanPolicy    OrphanPolicy
+	idemDigest      *journal.IdempotencyDigest
+	currentLease    *backend.Lease
+	currentBackend  backend.State
+	originBackend   backend.State
+	createdAt       time.Time
+	requestKind     migrate.RequestKind
+	structured      bool
+	multipleChoice  bool
+	migrationsUsed  uint64
+	estimateWarned  bool
+	toolCalls       migrate.ToolCallTracker
+	toolTrackFailed bool
+	attemptCancel   context.CancelCauseFunc
+	pendingTrigger  string
 
 	context    context.Context
 	cancel     context.CancelCauseFunc
@@ -60,25 +75,28 @@ type streamRuntime struct {
 	firstEntry chan journal.Entry
 	openEntry  journal.Entry
 
-	writeMu      sync.Mutex
-	mu           sync.Mutex
-	terminating  bool
-	terminal     journal.EntryKind
-	readers      int
-	orphanTimer  *time.Timer
-	progress     streamProgress
-	finishReason string
-	lastSeq      uint64
-	stopResult   *stopResponse
-	activeDone   sync.Once
-	firstOnce    sync.Once
+	writeMu       sync.Mutex
+	mu            sync.Mutex
+	terminating   bool
+	terminal      journal.EntryKind
+	readers       int
+	orphanTimer   *time.Timer
+	progress      streamProgress
+	finishReason  string
+	lastSeq       uint64
+	stopResult    *stopResponse
+	stopRequested bool
+	stopWait      chan struct{}
+	activeDone    sync.Once
+	firstOnce     sync.Once
 }
 
 type streamResolution struct {
-	id       journal.StreamID
-	runtime  *streamRuntime
-	existing bool
-	degraded bool
+	id            journal.StreamID
+	runtime       *streamRuntime
+	existing      bool
+	degraded      bool
+	degradedLease *backend.Lease
 }
 
 type upstreamRejection struct {
@@ -102,6 +120,7 @@ func newDurableService(
 	ids streamIDSource,
 	idempotency journal.IdempotencyRegistry,
 	logger *slog.Logger,
+	backends *backend.Pool,
 ) *durableService {
 	return &durableService{
 		rootContext: rootContext,
@@ -112,6 +131,7 @@ func newDurableService(
 		ids:         ids,
 		idempotency: idempotency,
 		logger:      logger,
+		backends:    backends,
 	}
 }
 
@@ -140,7 +160,7 @@ func (s *durableService) resolve(
 			)
 			if resolveErr != nil {
 				s.logDegraded(request, "idempotency resolution failed", resolveErr)
-				return streamResolution{degraded: true}, nil
+				return s.resolveDegraded(id)
 			}
 			digestValue := binding.Digest
 			digest = &digestValue
@@ -150,55 +170,75 @@ func (s *durableService) resolve(
 					return streamResolution{id: binding.ID, runtime: runtime, existing: true}, nil
 				} else if !errors.Is(stateErr, journal.ErrNotFound) && !errors.Is(stateErr, journal.ErrExpired) {
 					s.logDegraded(request, "idempotent journal lookup failed", stateErr)
-					return streamResolution{degraded: true}, nil
+					return s.resolveDegraded(id)
 				}
 				if _, removeErr := s.idempotency.Remove(s.rootContext, binding.Digest); removeErr != nil {
 					s.logDegraded(request, "stale idempotency cleanup failed", removeErr)
-					return streamResolution{degraded: true}, nil
+					return s.resolveDegraded(id)
 				}
 				continue
 			}
 		}
 
 		meta := journal.Meta{
-			Model:     normalized.Model,
-			BackendID: safeBackendAddress(s.target),
-			Endpoint:  request.URL.Path,
-			Request:   bytes.Clone(normalized.Body),
+			Model:    normalized.Model,
+			Endpoint: request.URL.Path,
+			Request:  bytes.Clone(normalized.Body),
 		}
+		lease, acquireErr := s.backends.Acquire(id.String())
+		if acquireErr != nil {
+			if digest != nil {
+				_, _ = s.idempotency.Remove(s.rootContext, *digest)
+			}
+			return streamResolution{}, fmt.Errorf("select initial backend: %w", acquireErr)
+		}
+		selected := lease.Backend()
+		meta.BackendID = selected.ID.String()
+		meta.ModelVersion = optionalString(selected.ModelVersion, selected.ModelVersion != "")
 		if err := s.journal.Open(s.rootContext, id, meta); err != nil {
 			if digest != nil {
 				_, _ = s.idempotency.Remove(s.rootContext, *digest)
 			}
 			if errors.Is(err, journal.ErrAlreadyExists) {
+				lease.Release()
 				continue
 			}
 			s.logDegraded(request, "durable journal unavailable", err)
-			return streamResolution{degraded: true}, nil
+			return streamResolution{degraded: true, degradedLease: lease}, nil
 		}
 
 		producerContext, cancel := context.WithCancelCause(s.rootContext)
 		openPayload, marshalErr := marshalOpenPayload(id, meta)
 		if marshalErr != nil {
 			cancel(marshalErr)
+			lease.Release()
 			if digest != nil {
 				_, _ = s.idempotency.Remove(s.rootContext, *digest)
 			}
 			return streamResolution{}, marshalErr
 		}
+		structured, _ := migrate.IsStructuredRequest(normalized.Body)
 		runtime := &streamRuntime{
-			service:       s,
-			id:            id,
-			endpoint:      request.URL.Path,
-			requestBody:   bytes.Clone(normalized.Body),
-			requestHeader: cloneUpstreamHeaders(request.Header),
-			orphanPolicy:  policy,
-			idemDigest:    digest,
-			context:       producerContext,
-			cancel:        cancel,
-			done:          make(chan struct{}),
-			firstEntry:    make(chan journal.Entry, 1),
-			lastSeq:       1,
+			service:        s,
+			id:             id,
+			endpoint:       request.URL.Path,
+			requestBody:    bytes.Clone(normalized.Body),
+			requestHeader:  cloneUpstreamHeaders(request.Header),
+			orphanPolicy:   policy,
+			idemDigest:     digest,
+			currentLease:   lease,
+			currentBackend: selected,
+			originBackend:  selected,
+			createdAt:      time.Now().UTC(),
+			requestKind:    requestKindForEndpoint(request.URL.Path),
+			structured:     structured,
+			multipleChoice: requestHasMultipleChoices(normalized.Body),
+			context:        producerContext,
+			cancel:         cancel,
+			done:           make(chan struct{}),
+			firstEntry:     make(chan journal.Entry, 1),
+			stopWait:       make(chan struct{}),
+			lastSeq:        1,
 		}
 		runtime.openEntry = journal.Entry{Seq: 1, Kind: journal.KindOpen, Payload: openPayload}
 		s.active.Add(1)
@@ -211,153 +251,30 @@ func (s *durableService) resolve(
 	return streamResolution{}, errors.New("could not allocate a collision-free stream ID")
 }
 
+func (s *durableService) resolveDegraded(id journal.StreamID) (streamResolution, error) {
+	lease, err := s.backends.Acquire(id.String())
+	if err != nil {
+		return streamResolution{}, fmt.Errorf("select degraded backend: %w", err)
+	}
+	return streamResolution{degraded: true, degradedLease: lease}, nil
+}
+
 func (s *durableService) start(runtime *streamRuntime, rawQuery string) (*upstreamRejection, error) {
-	upstreamURL := joinUpstreamURL(s.target, runtime.endpoint, rawQuery)
-	request, err := http.NewRequestWithContext(
-		runtime.context,
-		http.MethodPost,
-		upstreamURL.String(),
-		bytes.NewReader(runtime.requestBody),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("construct upstream request: %w", err)
-	}
-	request.Header = runtime.requestHeader.Clone()
-	request.ContentLength = int64(len(runtime.requestBody))
-	request.Host = s.target.Host
-
-	client := &http.Client{
-		Transport: s.transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		if context.Cause(runtime.context) != nil {
-			runtime.finishCanceledProducer()
-			return nil, nil
-		}
-		if closeErr := runtime.finishError("upstream_error", "upstream request failed", "tcp_reset"); closeErr != nil {
-			return nil, errors.Join(fmt.Errorf("dispatch upstream: %w", err), closeErr)
-		}
-		return nil, nil
-	}
-
-	if response.StatusCode >= http.StatusBadRequest && response.StatusCode < http.StatusInternalServerError {
-		body := readBoundedErrorBody(response.Body)
-		if closeErr := response.Body.Close(); closeErr != nil {
-			s.logger.Warn("close rejected upstream response", "stream_id", runtime.id, "error", closeErr)
-		}
-		if closeErr := runtime.finishError("upstream_error", "upstream rejected the request", "upstream_rejected"); closeErr != nil {
-			return nil, closeErr
-		}
-		return &upstreamRejection{status: response.StatusCode, body: body}, nil
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.CopyN(io.Discard, response.Body, maxUpstreamErrorBytes)
-		if closeErr := response.Body.Close(); closeErr != nil {
-			s.logger.Warn("close failed upstream response", "stream_id", runtime.id, "error", closeErr)
-		}
-		if closeErr := runtime.finishError("upstream_error", "upstream backend failed", "upstream_5xx"); closeErr != nil {
-			return nil, closeErr
-		}
-		return nil, nil
-	}
-
-	contentType, _, contentTypeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if contentTypeErr != nil || !strings.EqualFold(contentType, "text/event-stream") {
-		_, _ = io.CopyN(io.Discard, response.Body, maxUpstreamErrorBytes)
-		if closeErr := response.Body.Close(); closeErr != nil {
-			s.logger.Warn("close invalid upstream response", "stream_id", runtime.id, "error", closeErr)
-		}
-		if closeErr := runtime.finishError("upstream_error", "upstream response was not an event stream", "invalid_content_type"); closeErr != nil {
-			return nil, closeErr
-		}
-		return nil, nil
-	}
-
-	decoder := sse.NewDecoder(response.Body)
-	for {
-		accepted, terminal := runtime.consumeNext(decoder)
-		if terminal {
-			if closeErr := response.Body.Close(); closeErr != nil {
-				s.logger.Warn("close upstream stream", "stream_id", runtime.id, "error", closeErr)
-			}
-			return nil, nil
-		}
-		if accepted {
-			break
-		}
-	}
-	go runtime.consumeRemaining(response.Body, decoder)
-	return nil, nil
-}
-
-func (r *streamRuntime) consumeRemaining(body io.ReadCloser, decoder *sse.Decoder) {
-	defer func() {
-		if err := body.Close(); err != nil {
-			r.service.logger.Warn("close upstream stream", "stream_id", r.id, "error", err)
-		}
-	}()
-
-	for {
-		_, terminal := r.consumeNext(decoder)
-		if terminal {
-			return
-		}
-	}
-}
-
-func (r *streamRuntime) consumeNext(decoder *sse.Decoder) (bool, bool) {
-	event, err := decoder.Decode()
-	if err != nil {
-		if context.Cause(r.context) != nil {
-			r.finishCanceledProducer()
-			return false, true
-		}
-		reason := "upstream_read_error"
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, sse.ErrIncompleteEvent) {
-			reason = "unexpected_eof"
-		}
-		if closeErr := r.finishError("upstream_error", "upstream stream ended before completion", reason); closeErr != nil {
-			r.service.logger.Error("close failed stream", "stream_id", r.id, "error", errors.Join(err, closeErr))
-		}
-		return false, true
-	}
-	if !event.HasData {
-		return false, false
-	}
-	if bytes.Equal(bytes.TrimSpace(event.Data), []byte("[DONE]")) {
-		if closeErr := r.finishDone(); closeErr != nil {
-			r.service.logger.Error("finish durable stream", "stream_id", r.id, "error", closeErr)
-		}
-		return true, true
-	}
-	observation, observeErr := observeOpenAIChunk(event.Data)
-	if observeErr != nil {
-		if closeErr := r.finishError("upstream_error", "upstream emitted an invalid chunk", "invalid_chunk"); closeErr != nil {
-			r.service.logger.Error("close invalid upstream stream", "stream_id", r.id, "error", errors.Join(observeErr, closeErr))
-		}
-		return true, true
-	}
-	if len(observation.ErrorPayload) != 0 {
-		if closeErr := r.finishError("upstream_error", "upstream emitted an error chunk", "error_chunk"); closeErr != nil {
-			r.service.logger.Error("close errored upstream stream", "stream_id", r.id, "error", closeErr)
-		}
-		return true, true
-	}
-	if appendErr := r.appendChunk(event, observation); appendErr != nil {
-		if context.Cause(r.context) == nil {
-			r.service.logger.Error("append durable chunk", "stream_id", r.id, "error", appendErr)
-			_ = r.finishError("journal_capacity_exceeded", "durable journal could not accept a chunk", "journal_capacity")
-		}
-		return true, true
-	}
-	return true, false
+	result := make(chan producerStartResult, 1)
+	go runtime.runProducer(rawQuery, result)
+	started := <-result
+	return started.rejection, started.err
 }
 
 func (r *streamRuntime) appendChunk(event sse.Event, observation chunkObservation) error {
+	if r.requestKind == migrate.RequestChatCompletion {
+		r.mu.Lock()
+		if err := r.toolCalls.ObserveChunk(event.Data); err != nil {
+			r.toolTrackFailed = true
+			r.service.logger.Warn("track tool-call boundary", "stream_id", r.id, "error", err)
+		}
+		r.mu.Unlock()
+	}
 	payload, err := json.Marshal(struct {
 		Data          string  `json:"data"`
 		UpstreamEvent *string `json:"upstream_event"`
@@ -427,17 +344,27 @@ func (r *streamRuntime) finishErrorWhen(code, message, reason string, guard func
 }
 
 func (r *streamRuntime) stop() (stopResponse, error) {
-	r.mu.Lock()
-	if r.terminal == journal.KindStopped && r.stopResult != nil {
-		result := *r.stopResult
+	for {
+		r.mu.Lock()
+		if r.terminal == journal.KindStopped && r.stopResult != nil {
+			result := *r.stopResult
+			r.mu.Unlock()
+			return result, nil
+		}
+		if r.stopRequested {
+			wait := r.stopWait
+			r.mu.Unlock()
+			<-wait
+			continue
+		}
+		if r.terminal != "" || r.terminating {
+			r.mu.Unlock()
+			return stopResponse{}, journal.ErrTerminalState
+		}
+		r.stopRequested = true
 		r.mu.Unlock()
-		return result, nil
+		break
 	}
-	if r.terminal != "" || r.terminating {
-		r.mu.Unlock()
-		return stopResponse{}, journal.ErrTerminalState
-	}
-	r.mu.Unlock()
 	var result stopResponse
 	err := r.closeTerminal(journal.KindStopped, errExplicitStop, nil, func() ([]byte, *stopResponse, error) {
 		partialText, usage := r.progress.Snapshot()
@@ -447,6 +374,12 @@ func (r *streamRuntime) stop() (stopResponse, error) {
 		result = stopResponse{StreamID: r.id, Outcome: "stopped", PartialText: partialText, Usage: usage}
 		return payload, &result, marshalErr
 	})
+	r.mu.Lock()
+	wait := r.stopWait
+	r.stopWait = make(chan struct{})
+	r.stopRequested = false
+	close(wait)
+	r.mu.Unlock()
 	return result, err
 }
 
@@ -490,6 +423,8 @@ func (r *streamRuntime) closeTerminal(
 	r.terminal = kind
 	r.terminating = false
 	r.stopResult = stopResult
+	lease := r.currentLease
+	r.currentLease = nil
 	if r.orphanTimer != nil {
 		r.orphanTimer.Stop()
 		r.orphanTimer = nil
@@ -497,6 +432,7 @@ func (r *streamRuntime) closeTerminal(
 	close(r.done)
 	r.activeDone.Do(r.service.active.Done)
 	r.mu.Unlock()
+	lease.Release()
 	r.publishFirst(terminalEntry)
 	r.refreshIdempotency()
 	time.AfterFunc(r.service.config.JournalTTL, func() {

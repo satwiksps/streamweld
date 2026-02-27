@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/streamweld/streamweld/internal/backend"
+	"github.com/streamweld/streamweld/internal/conformance"
 	"github.com/streamweld/streamweld/internal/journal"
 )
 
@@ -24,6 +26,7 @@ type serverOptions struct {
 	journal          journal.Journal
 	ids              StreamIDGenerator
 	idempotency      journal.IdempotencyRegistry
+	backendPool      *backend.Pool
 }
 
 // StreamIDGenerator supplies collision-resistant stream identifiers.
@@ -31,8 +34,7 @@ type StreamIDGenerator interface {
 	New() (journal.StreamID, error)
 }
 
-// WithReadinessChecker supplies the policy used by /readyz. Backend pools can
-// use this hook to report aggregate serving readiness in later phases.
+// WithReadinessChecker supplies the policy used by /readyz.
 func WithReadinessChecker(checker ReadinessChecker) Option {
 	return func(options *serverOptions) error {
 		if checker == nil {
@@ -43,8 +45,7 @@ func WithReadinessChecker(checker ReadinessChecker) Option {
 	}
 }
 
-// WithTransport supplies the upstream HTTP transport. It is primarily useful
-// for tests and for the backend-selection layer introduced in a later phase.
+// WithTransport supplies the shared upstream HTTP transport.
 func WithTransport(transport http.RoundTripper) Option {
 	return func(options *serverOptions) error {
 		if transport == nil {
@@ -90,6 +91,18 @@ func WithIdempotencyRegistry(registry journal.IdempotencyRegistry) Option {
 	}
 }
 
+// WithBackendPool supplies a dynamically updateable backend pool. The default
+// pool contains Config.BackendURL as an immediately healthy standalone backend.
+func WithBackendPool(pool *backend.Pool) Option {
+	return func(options *serverOptions) error {
+		if pool == nil {
+			return errors.New("backend pool cannot be nil")
+		}
+		options.backendPool = pool
+		return nil
+	}
+}
+
 // Server is an OpenAI-compatible passthrough proxy with graceful lifecycle
 // management. Its Handler can be embedded in an existing HTTP server for tests.
 type Server struct {
@@ -102,6 +115,7 @@ type Server struct {
 	forceCancel context.CancelFunc
 	readiness   *readinessGate
 	durable     *durableService
+	backendPool *backend.Pool
 }
 
 // NewServer validates config and constructs a proxy without opening a listener.
@@ -128,6 +142,30 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 	}
 	if settings.transport == nil {
 		settings.transport = newTransport(config)
+	}
+	if settings.backendPool == nil {
+		poolConfig := backend.DefaultConfig()
+		poolConfig.QuarantineWindow = config.BackendQuarantineWindow
+		poolConfig.ProbeInterval = config.BackendHealthInterval
+		poolConfig.ProbeTimeout = config.ReadinessTimeout
+		poolConfig.HTTPClient = &http.Client{
+			Transport: settings.transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		standalone := backend.Backend{
+			ID:              backend.ID(target.Host),
+			URL:             target,
+			TemplateVerdict: conformance.VerdictUnknown,
+		}
+		settings.backendPool, err = backend.NewPool(poolConfig, standalone)
+		if err != nil {
+			return nil, fmt.Errorf("create backend pool: %w", err)
+		}
+		if _, err := settings.backendPool.SetHealth(standalone.ID, backend.HealthHealthy); err != nil {
+			return nil, fmt.Errorf("admit standalone backend: %w", err)
+		}
 	}
 	if settings.readinessChecker == nil {
 		settings.readinessChecker = newBackendReadinessChecker(target, settings.transport, config.ReadinessTimeout)
@@ -161,8 +199,9 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		settings.ids,
 		settings.idempotency,
 		logger,
+		settings.backendPool,
 	)
-	handler := newHandler(target, settings.transport, readiness, durable, logger)
+	handler := newHandler(readiness, durable)
 	httpServer := &http.Server{
 		Addr:              config.ListenAddress,
 		Handler:           handler,
@@ -185,6 +224,7 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		forceCancel: forceCancel,
 		readiness:   readiness,
 		durable:     durable,
+		backendPool: settings.backendPool,
 	}, nil
 }
 
@@ -216,8 +256,11 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	if listener == nil {
 		return errors.New("listener cannot be nil")
 	}
+	healthContext, stopHealth := context.WithCancel(ctx)
+	defer stopHealth()
 	defer s.forceCancel()
 	defer s.readiness.BeginShutdown()
+	go s.durable.runHealthChecks(healthContext)
 
 	s.logger.Info("proxy listening",
 		"address", listener.Addr().String(),

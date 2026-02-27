@@ -1,0 +1,897 @@
+package proxy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/streamweld/streamweld/internal/backend"
+	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/streamweld/streamweld/internal/migrate"
+	"github.com/streamweld/streamweld/internal/proxy/sse"
+)
+
+type migrationCause struct{ reason string }
+
+func (cause *migrationCause) Error() string { return "migrate producer: " + cause.reason }
+
+type producerStartResult struct {
+	rejection *upstreamRejection
+	err       error
+}
+
+type attemptSpec struct {
+	body             []byte
+	continuation     bool
+	seamBase         string
+	migrationEntries []journal.Entry
+	estimateWarning  bool
+}
+
+type attemptOutcome struct {
+	terminal  bool
+	trigger   string
+	passive   bool
+	rejection *upstreamRejection
+	err       error
+}
+
+type bufferedAttemptFrame struct {
+	event       sse.Event
+	observation chunkObservation
+}
+
+func requestKindForEndpoint(endpoint string) migrate.RequestKind {
+	if endpoint == "/v1/completions" {
+		return migrate.RequestCompletion
+	}
+	return migrate.RequestChatCompletion
+}
+
+func requestHasMultipleChoices(body []byte) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		return false
+	}
+	raw, ok := fields["n"]
+	if !ok {
+		return false
+	}
+	var choices uint64
+	return json.Unmarshal(raw, &choices) == nil && choices != 1
+}
+
+func (r *streamRuntime) runProducer(rawQuery string, started chan<- producerStartResult) {
+	signaled := false
+	signal := func(result producerStartResult) {
+		if signaled {
+			return
+		}
+		signaled = true
+		started <- result
+	}
+	defer func() { signal(producerStartResult{}) }()
+
+	spec := attemptSpec{body: bytes.Clone(r.requestBody)}
+	for {
+		outcome := r.runAttempt(rawQuery, spec, signal)
+		if outcome.err != nil {
+			signal(producerStartResult{err: outcome.err})
+			return
+		}
+		if outcome.rejection != nil {
+			signal(producerStartResult{rejection: outcome.rejection})
+			return
+		}
+		if outcome.terminal {
+			return
+		}
+
+		next, migrated := r.prepareMigration(outcome.trigger, outcome.passive)
+		if !migrated {
+			// Refusal commits its warning/error sequence before returning.
+			signal(producerStartResult{})
+			return
+		}
+		spec = next
+	}
+}
+
+func (r *streamRuntime) runAttempt(
+	rawQuery string,
+	spec attemptSpec,
+	signal func(producerStartResult),
+) attemptOutcome {
+	r.mu.Lock()
+	selected := r.currentBackend
+	r.mu.Unlock()
+
+	attemptContext, attemptCancel := context.WithCancelCause(r.context)
+	r.mu.Lock()
+	r.attemptCancel = attemptCancel
+	pending := r.pendingTrigger
+	r.pendingTrigger = ""
+	r.mu.Unlock()
+	if pending != "" {
+		attemptCancel(&migrationCause{reason: pending})
+	}
+	if context.Cause(attemptContext) != nil {
+		return r.outcomeForAttemptError(attemptContext, "tcp_reset")
+	}
+
+	var stallTimer *time.Timer
+	resetStall := func() {
+		if !r.service.config.StallDetectionEnabled {
+			return
+		}
+		if stallTimer == nil {
+			stallTimer = time.AfterFunc(r.service.config.StallTimeout, func() {
+				attemptCancel(&migrationCause{reason: "stall"})
+			})
+			return
+		}
+		stallTimer.Reset(r.service.config.StallTimeout)
+	}
+	resetStall()
+	defer func() {
+		if stallTimer != nil {
+			stallTimer.Stop()
+		}
+		attemptCancel(nil)
+	}()
+
+	upstreamURL := joinUpstreamURL(selected.URL, r.endpoint, rawQuery)
+	request, err := http.NewRequestWithContext(
+		attemptContext,
+		http.MethodPost,
+		upstreamURL.String(),
+		bytes.NewReader(spec.body),
+	)
+	if err != nil {
+		return attemptOutcome{err: fmt.Errorf("construct upstream request: %w", err)}
+	}
+	request.Header = r.requestHeader.Clone()
+	request.ContentLength = int64(len(spec.body))
+	request.Host = selected.URL.Host
+
+	client := &http.Client{
+		Transport: r.service.transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if spec.continuation && !r.markAttemptDispatched() {
+		return attemptOutcome{terminal: true}
+	}
+	response, err := client.Do(request)
+	if spec.continuation {
+		if commitErr := r.commitDispatchedAttempt(spec.migrationEntries, spec.estimateWarning); commitErr != nil {
+			if context.Cause(r.context) == nil {
+				_ = r.finishError("journal_capacity_exceeded", "durable journal could not record migration", "journal_capacity")
+			}
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
+			return attemptOutcome{terminal: true}
+		}
+		signal(producerStartResult{})
+	}
+	if err != nil {
+		return r.outcomeForAttemptError(attemptContext, "tcp_reset")
+	}
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			r.service.logger.Warn("close upstream stream", "stream_id", r.id, "error", closeErr)
+		}
+	}()
+
+	if response.StatusCode >= http.StatusBadRequest && response.StatusCode < http.StatusInternalServerError {
+		body := readBoundedErrorBody(response.Body)
+		if !spec.continuation {
+			if closeErr := r.finishError("upstream_error", "upstream rejected the request", "upstream_rejected"); closeErr != nil {
+				return attemptOutcome{err: closeErr}
+			}
+			return attemptOutcome{terminal: true, rejection: &upstreamRejection{status: response.StatusCode, body: body}}
+		}
+		if closeErr := r.finishError("upstream_error", "continuation request was rejected", "upstream_rejected"); closeErr != nil {
+			return attemptOutcome{err: closeErr}
+		}
+		return attemptOutcome{terminal: true}
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.CopyN(io.Discard, response.Body, maxUpstreamErrorBytes)
+		return attemptOutcome{trigger: "upstream_5xx", passive: true}
+	}
+
+	contentType, _, contentTypeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if contentTypeErr != nil || !strings.EqualFold(contentType, "text/event-stream") {
+		_, _ = io.CopyN(io.Discard, response.Body, maxUpstreamErrorBytes)
+		if closeErr := r.finishError("upstream_error", "upstream response was not an event stream", "invalid_content_type"); closeErr != nil {
+			return attemptOutcome{err: closeErr}
+		}
+		return attemptOutcome{terminal: true}
+	}
+
+	decoder, decoderErr := sse.NewDecoderWithOptions(
+		response.Body,
+		sse.WithMaxEventBytes(r.service.config.MaxSSEEventBytes),
+	)
+	if decoderErr != nil {
+		return attemptOutcome{err: fmt.Errorf("configure upstream SSE decoder: %w", decoderErr)}
+	}
+
+	frames := make([]bufferedAttemptFrame, 0, 4)
+	var continuationText []byte
+	for {
+		event, decodeErr := decoder.Decode()
+		if decodeErr != nil {
+			return r.outcomeForAttemptError(attemptContext, classifyReadFailure(decodeErr))
+		}
+		if !event.HasData {
+			continue
+		}
+		resetStall()
+		if bytes.Equal(bytes.TrimSpace(event.Data), []byte(doneSentinelData)) {
+			if spec.continuation {
+				if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
+					r.service.logger.Error("reconcile continuation seam", "stream_id", r.id, "error", err)
+					_ = r.finishError("migration_refused", "continuation seam could not be reconciled", "unsupported_continuation_shape")
+					return attemptOutcome{terminal: true}
+				}
+				signal(producerStartResult{})
+			}
+			if closeErr := r.finishDone(); closeErr != nil {
+				return attemptOutcome{err: closeErr}
+			}
+			signal(producerStartResult{})
+			return attemptOutcome{terminal: true}
+		}
+
+		observation, observeErr := observeOpenAIChunk(event.Data)
+		if observeErr != nil {
+			if closeErr := r.finishError("upstream_error", "upstream emitted an invalid chunk", "invalid_chunk"); closeErr != nil {
+				return attemptOutcome{err: errors.Join(observeErr, closeErr)}
+			}
+			return attemptOutcome{terminal: true}
+		}
+		if len(observation.ErrorPayload) != 0 {
+			return attemptOutcome{trigger: "error_chunk", passive: true}
+		}
+
+		if spec.continuation {
+			frames = append(frames, bufferedAttemptFrame{event: event, observation: observation})
+			continuationText = append(continuationText, observation.TextDelta...)
+			if len(continuationText) < r.service.config.SeamWindowBytes {
+				continue
+			}
+			if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
+				_ = r.finishError("migration_refused", "continuation seam could not be reconciled", "unsupported_continuation_shape")
+				return attemptOutcome{terminal: true}
+			}
+			frames = nil
+			continuationText = nil
+			spec.continuation = false
+			signal(producerStartResult{})
+			continue
+		}
+
+		if appendErr := r.appendChunk(event, observation); appendErr != nil {
+			if context.Cause(r.context) == nil {
+				r.service.logger.Error("append durable chunk", "stream_id", r.id, "error", appendErr)
+				_ = r.finishError("journal_capacity_exceeded", "durable journal could not accept a chunk", "journal_capacity")
+			}
+			return attemptOutcome{terminal: true}
+		}
+		signal(producerStartResult{})
+	}
+}
+
+func (r *streamRuntime) outcomeForAttemptError(
+	attemptContext context.Context,
+	fallbackReason string,
+) attemptOutcome {
+	if context.Cause(r.context) != nil {
+		r.finishCanceledProducer()
+		return attemptOutcome{terminal: true}
+	}
+	var cause *migrationCause
+	if errors.As(context.Cause(attemptContext), &cause) {
+		return attemptOutcome{trigger: cause.reason, passive: cause.reason == "stall"}
+	}
+	return attemptOutcome{trigger: fallbackReason, passive: true, err: nil}
+}
+
+func classifyReadFailure(err error) string {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, sse.ErrIncompleteEvent) {
+		return "unexpected_eof"
+	}
+	return "tcp_reset"
+}
+
+func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSpec, bool) {
+	r.mu.Lock()
+	if r.terminal != "" || r.terminating || context.Cause(r.context) != nil {
+		r.mu.Unlock()
+		return attemptSpec{}, false
+	}
+	failedLease := r.currentLease
+	failedBackend := r.currentBackend
+	accumulated, usage := r.progress.Snapshot()
+	insideToolCall := r.toolCalls.InsideToolCall() || r.toolTrackFailed
+	migrationsUsed := r.migrationsUsed
+	createdAt := r.createdAt
+	estimateWarning := usage.Estimated && !r.estimateWarned
+	r.mu.Unlock()
+
+	if passive {
+		_, _ = r.service.backends.MarkPassiveFailure(failedBackend.ID)
+	}
+
+	correctness := migrate.EvaluateCorrectness(migrate.CorrectnessSnapshot{
+		ToolCallInProgress: insideToolCall,
+		StructuredResponse: r.structured,
+		AccumulatedText:    []byte(accumulated),
+		MultipleChoices:    r.multipleChoice,
+	})
+
+	targetLease, acquireErr := r.service.backends.Acquire(r.id.String(), failedBackend.ID)
+	targetAvailable := acquireErr == nil
+	target := backend.State{
+		Backend: backend.Backend{
+			ModelVersion:    failedBackend.ModelVersion,
+			TemplateVerdict: failedBackend.TemplateVerdict,
+		},
+	}
+	if targetAvailable {
+		target = targetLease.Backend()
+	}
+
+	policy := migrate.Policy{
+		MaxMigrations:         uint64(r.service.config.MaxMigrations),
+		MaxMigrationTokens:    r.service.config.MaxMigrationTokens,
+		MaxStreamDuration:     r.service.config.MaxStreamDuration,
+		AllowStructuredResume: r.service.config.AllowStructuredResume,
+		AllowCrossVersion:     r.service.config.AllowCrossVersion,
+		SeamWindowBytes:       r.service.config.SeamWindowBytes,
+		TemplateMode:          r.service.config.TemplateMode,
+	}
+	eligibility, eligibilityErr := migrate.EvaluateEligibility(policy, migrate.EligibilitySnapshot{
+		MigrationsUsed:         migrationsUsed,
+		AccumulatedTokens:      usage.CompletionTokens,
+		Elapsed:                time.Since(createdAt),
+		TemplateVerdict:        target.TemplateVerdict,
+		StructuredResponse:     r.structured,
+		OriginModelVersion:     r.originBackend.ModelVersion,
+		TargetModelVersion:     target.ModelVersion,
+		TargetBackendAvailable: targetAvailable,
+	})
+	if eligibilityErr != nil {
+		if targetLease != nil {
+			targetLease.Release()
+		}
+		r.service.logger.Error("evaluate migration policy", "stream_id", r.id, "error", eligibilityErr)
+		_ = r.finishError("migration_refused", "migration policy could not be evaluated", "invalid_policy")
+		return attemptSpec{}, false
+	}
+
+	if !eligibility.Eligible() || !correctness.Eligible() {
+		if targetLease != nil {
+			targetLease.Release()
+		}
+		r.refuseMigration(estimateWarning, eligibility.Failures, correctness.Failures)
+		return attemptSpec{}, false
+	}
+
+	rewritten, rewriteErr := migrate.RewriteContinuation(r.requestKind, r.requestBody, migrate.ContinuationOptions{
+		AccumulatedText:      accumulated,
+		TokensAlreadyEmitted: usage.CompletionTokens,
+	})
+	if rewriteErr != nil {
+		targetLease.Release()
+		r.refuseMigration(estimateWarning, nil, []migrate.CorrectnessFailure{migrate.FailureUnsupportedContinuationShape})
+		return attemptSpec{}, false
+	}
+
+	entries := make([]journal.Entry, 0, len(eligibility.Warnings)+2)
+	if estimateWarning {
+		entries = append(entries, warningEntry("token_count_estimated", "completion token count is a conservative estimate", nil))
+	}
+	for _, warning := range eligibility.Warnings {
+		entries = append(entries, warningEntry(string(warning), warningMessage(string(warning)), nil))
+	}
+	migrationPayload, marshalErr := json.Marshal(struct {
+		FromBackend         string `json:"from_backend"`
+		ToBackend           string `json:"to_backend"`
+		Reason              string `json:"reason"`
+		RescuedTokens       uint64 `json:"rescued_tokens"`
+		TokenCountEstimated bool   `json:"token_count_estimated"`
+		Attempt             uint64 `json:"attempt"`
+	}{
+		FromBackend:         failedBackend.ID.String(),
+		ToBackend:           target.ID.String(),
+		Reason:              reason,
+		RescuedTokens:       usage.CompletionTokens,
+		TokenCountEstimated: usage.Estimated,
+		Attempt:             migrationsUsed + 2,
+	})
+	if marshalErr != nil {
+		targetLease.Release()
+		_ = r.finishError("migration_refused", "migration metadata could not be encoded", "unsupported_continuation_shape")
+		return attemptSpec{}, false
+	}
+	entries = append(entries, journal.Entry{Kind: journal.KindMigration, Payload: migrationPayload})
+
+	if err := r.reserveMigrationTarget(failedLease, targetLease, target); err != nil {
+		targetLease.Release()
+		return attemptSpec{}, false
+	}
+	return attemptSpec{
+		body:             rewritten,
+		continuation:     true,
+		seamBase:         accumulated,
+		migrationEntries: entries,
+		estimateWarning:  estimateWarning,
+	}, true
+}
+
+func (r *streamRuntime) reserveMigrationTarget(
+	failedLease *backend.Lease,
+	targetLease *backend.Lease,
+	target backend.State,
+) error {
+	r.mu.Lock()
+	if r.terminal != "" || r.terminating || r.currentLease != failedLease {
+		r.mu.Unlock()
+		return journal.ErrTerminalState
+	}
+	r.currentLease = targetLease
+	r.currentBackend = target
+	r.attemptCancel = nil
+	r.mu.Unlock()
+	failedLease.Release()
+
+	latest, err := r.service.backends.Get(target.ID)
+	reason := ""
+	if err != nil || latest.Health != backend.HealthHealthy || latest.Quarantined {
+		reason = "health"
+	} else if latest.Draining {
+		reason = "drain"
+	}
+	if reason != "" {
+		r.mu.Lock()
+		if r.pendingTrigger == "" && r.currentLease == targetLease {
+			r.pendingTrigger = reason
+		}
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *streamRuntime) markAttemptDispatched() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.terminal != "" || r.terminating || context.Cause(r.context) != nil {
+		return false
+	}
+	r.migrationsUsed++
+	r.progress.BeginAttempt()
+	return true
+}
+
+func (r *streamRuntime) commitDispatchedAttempt(entries []journal.Entry, estimateWarning bool) error {
+	if err := r.appendNonTerminal(entries); err != nil {
+		return err
+	}
+	if estimateWarning {
+		r.mu.Lock()
+		r.estimateWarned = true
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *streamRuntime) refuseMigration(
+	estimateWarning bool,
+	predicates []migrate.Predicate,
+	correctness []migrate.CorrectnessFailure,
+) {
+	entries, reason := buildRefusalEntries(estimateWarning, predicates, correctness)
+	if err := r.appendNonTerminal(entries); err != nil && context.Cause(r.context) == nil {
+		r.service.logger.Error("append migration refusal warnings", "stream_id", r.id, "error", err)
+	} else if estimateWarning {
+		r.mu.Lock()
+		r.estimateWarned = true
+		r.mu.Unlock()
+	}
+	if err := r.finishError("migration_refused", "continuation is not safe", reason); err != nil &&
+		!errors.Is(err, journal.ErrTerminalState) {
+		r.service.logger.Error("close refused migration", "stream_id", r.id, "error", err)
+	}
+}
+
+func buildRefusalEntries(
+	estimateWarning bool,
+	predicates []migrate.Predicate,
+	correctness []migrate.CorrectnessFailure,
+) ([]journal.Entry, string) {
+	entries := make([]journal.Entry, 0, len(predicates)+len(correctness)+1)
+	if estimateWarning {
+		entries = append(entries, warningEntry("token_count_estimated", "completion token count is a conservative estimate", nil))
+	}
+	for _, predicate := range predicates {
+		value := string(predicate)
+		entries = append(entries, warningEntry(
+			"eligibility_failed",
+			"migration eligibility predicate failed",
+			&value,
+		))
+	}
+	for _, failure := range correctness {
+		entries = append(entries, warningEntry(string(failure), warningMessage(string(failure)), nil))
+	}
+	reason := "migration_ineligible"
+	if len(correctness) != 0 {
+		reason = string(correctness[0])
+	} else if len(predicates) != 0 {
+		reason = string(predicates[0])
+	}
+	return entries, reason
+}
+
+func warningEntry(code, message string, predicate *string) journal.Entry {
+	payload, _ := json.Marshal(struct {
+		Code      string         `json:"code"`
+		Message   string         `json:"message"`
+		Predicate *string        `json:"predicate"`
+		Details   map[string]any `json:"details"`
+	}{Code: code, Message: message, Predicate: predicate, Details: map[string]any{}})
+	return journal.Entry{Kind: journal.KindWarning, Payload: payload}
+}
+
+func warningMessage(code string) string {
+	switch code {
+	case "tool_call_boundary":
+		return "migration would split a fragmented tool call"
+	case "structured_prefix_invalid":
+		return "accumulated structured output is not a valid JSON prefix"
+	case "unsupported_continuation_shape":
+		return "the request cannot be represented as one continuation"
+	case "template_degraded":
+		return "the target chat template has degraded continuation conformance"
+	case "template_unsafe_permissive":
+		return "an unsafe target chat template was admitted by permissive policy"
+	case "seam_anomaly":
+		return "continuation may have restarted instead of continuing"
+	default:
+		return code
+	}
+}
+
+func (r *streamRuntime) appendNonTerminal(entries []journal.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	r.mu.Lock()
+	if r.terminal != "" || r.terminating {
+		r.mu.Unlock()
+		return journal.ErrTerminalState
+	}
+	r.mu.Unlock()
+	for _, entry := range entries {
+		seq, err := r.service.journal.Append(r.context, r.id, entry)
+		if err != nil {
+			return err
+		}
+		entry.Seq = seq
+		r.mu.Lock()
+		r.lastSeq = seq
+		r.mu.Unlock()
+		r.publishFirst(entry)
+	}
+	return nil
+}
+
+func (r *streamRuntime) flushSeam(
+	accumulated string,
+	frames []bufferedAttemptFrame,
+	continuation []byte,
+) error {
+	result, err := migrate.ReconcileSeam(
+		[]byte(accumulated),
+		continuation,
+		r.service.config.SeamWindowBytes,
+	)
+	if err != nil {
+		return err
+	}
+	if result.Anomaly {
+		if err := r.appendNonTerminal([]journal.Entry{
+			warningEntry("seam_anomaly", warningMessage("seam_anomaly"), nil),
+		}); err != nil {
+			return err
+		}
+	}
+	remaining := result.OverlapBytes
+	for _, frame := range frames {
+		event := frame.event
+		if remaining != 0 {
+			rewritten, rewriteErr := rewriteLeadingAssistantText(event.Data, &remaining)
+			if rewriteErr != nil {
+				return rewriteErr
+			}
+			event.Data = rewritten
+		}
+		observation, observeErr := observeOpenAIChunk(event.Data)
+		if observeErr != nil {
+			return observeErr
+		}
+		if err := r.appendChunk(event, observation); err != nil {
+			return err
+		}
+	}
+	if remaining != 0 {
+		return errors.New("seam overlap exceeded buffered assistant text")
+	}
+	return nil
+}
+
+func rewriteLeadingAssistantText(data []byte, remaining *int) ([]byte, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+	var choices []map[string]json.RawMessage
+	if raw, ok := root["choices"]; ok {
+		if err := json.Unmarshal(raw, &choices); err != nil {
+			return nil, err
+		}
+	}
+	for _, choice := range choices {
+		var index int
+		if raw, ok := choice["index"]; !ok || json.Unmarshal(raw, &index) != nil || index != 0 {
+			continue
+		}
+		if raw, ok := choice["text"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			var text string
+			if err := json.Unmarshal(raw, &text); err != nil {
+				return nil, err
+			}
+			text, err := stripTextPrefix(text, remaining)
+			if err != nil {
+				return nil, err
+			}
+			choice["text"], _ = json.Marshal(text)
+		}
+		if raw, ok := choice["delta"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			var delta map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &delta); err != nil {
+				return nil, err
+			}
+			if contentRaw, ok := delta["content"]; ok && !bytes.Equal(bytes.TrimSpace(contentRaw), []byte("null")) {
+				var content string
+				if err := json.Unmarshal(contentRaw, &content); err != nil {
+					return nil, err
+				}
+				content, err := stripTextPrefix(content, remaining)
+				if err != nil {
+					return nil, err
+				}
+				delta["content"], _ = json.Marshal(content)
+			}
+			choice["delta"], _ = json.Marshal(delta)
+		}
+	}
+	encodedChoices, err := json.Marshal(choices)
+	if err != nil {
+		return nil, err
+	}
+	root["choices"] = encodedChoices
+	return json.Marshal(root)
+}
+
+func stripTextPrefix(text string, remaining *int) (string, error) {
+	if *remaining == 0 {
+		return text, nil
+	}
+	remove := min(len(text), *remaining)
+	if !isUTF8Boundary(text, remove) {
+		return "", errors.New("seam overlap ended inside a UTF-8 rune")
+	}
+	*remaining -= remove
+	return text[remove:], nil
+}
+
+func isUTF8Boundary(value string, offset int) bool {
+	return offset == 0 || offset == len(value) || (value[offset]&0xc0) != 0x80
+}
+
+func (r *streamRuntime) triggerMigration(reason string, id backend.ID) bool {
+	if reason == "drain" || reason == "health" {
+		if r.refuseExternalTriggerIfIneligible(id) {
+			return true
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.terminal != "" || r.terminating || r.currentBackend.ID != id {
+		return false
+	}
+	if r.attemptCancel == nil {
+		if r.pendingTrigger == "" {
+			r.pendingTrigger = reason
+		}
+		return true
+	}
+	r.attemptCancel(&migrationCause{reason: reason})
+	return true
+}
+
+// refuseExternalTriggerIfIneligible handles the drain/health ordering rule:
+// an attempt that cannot migrate receives its durable refusal before its
+// upstream context is canceled. Eligible attempts return to the normal
+// attempt-cancel path so the producer goroutine owns the handoff.
+func (r *streamRuntime) refuseExternalTriggerIfIneligible(id backend.ID) bool {
+	r.mu.Lock()
+	if r.terminal != "" || r.terminating || r.currentBackend.ID != id {
+		r.mu.Unlock()
+		return false
+	}
+	failed := r.currentBackend
+	accumulated, usage := r.progress.Snapshot()
+	insideToolCall := r.toolCalls.InsideToolCall() || r.toolTrackFailed
+	migrationsUsed := r.migrationsUsed
+	createdAt := r.createdAt
+	estimateWarning := usage.Estimated && !r.estimateWarned
+	r.mu.Unlock()
+
+	targetLease, acquireErr := r.service.backends.Acquire(r.id.String(), failed.ID)
+	targetAvailable := acquireErr == nil
+	target := backend.State{Backend: backend.Backend{
+		ModelVersion: failed.ModelVersion, TemplateVerdict: failed.TemplateVerdict,
+	}}
+	if targetAvailable {
+		target = targetLease.Backend()
+		targetLease.Release()
+	}
+	policy := migrate.Policy{
+		MaxMigrations:         uint64(r.service.config.MaxMigrations),
+		MaxMigrationTokens:    r.service.config.MaxMigrationTokens,
+		MaxStreamDuration:     r.service.config.MaxStreamDuration,
+		AllowStructuredResume: r.service.config.AllowStructuredResume,
+		AllowCrossVersion:     r.service.config.AllowCrossVersion,
+		SeamWindowBytes:       r.service.config.SeamWindowBytes,
+		TemplateMode:          r.service.config.TemplateMode,
+	}
+	eligibility, err := migrate.EvaluateEligibility(policy, migrate.EligibilitySnapshot{
+		MigrationsUsed:         migrationsUsed,
+		AccumulatedTokens:      usage.CompletionTokens,
+		Elapsed:                time.Since(createdAt),
+		TemplateVerdict:        target.TemplateVerdict,
+		StructuredResponse:     r.structured,
+		OriginModelVersion:     r.originBackend.ModelVersion,
+		TargetModelVersion:     target.ModelVersion,
+		TargetBackendAvailable: targetAvailable,
+	})
+	if err != nil {
+		return false
+	}
+	correctness := migrate.EvaluateCorrectness(migrate.CorrectnessSnapshot{
+		ToolCallInProgress: insideToolCall,
+		StructuredResponse: r.structured,
+		AccumulatedText:    []byte(accumulated),
+		MultipleChoices:    r.multipleChoice,
+	})
+	if eligibility.Eligible() && correctness.Eligible() {
+		return false
+	}
+	entries, refusalReason := buildRefusalEntries(estimateWarning, eligibility.Failures, correctness.Failures)
+	return r.closeExternalMigrationRefusal(id, entries, refusalReason, estimateWarning)
+}
+
+func (r *streamRuntime) closeExternalMigrationRefusal(
+	id backend.ID,
+	warnings []journal.Entry,
+	reason string,
+	estimateWarning bool,
+) bool {
+	r.mu.Lock()
+	if r.terminal != "" || r.terminating || r.currentBackend.ID != id {
+		r.mu.Unlock()
+		return false
+	}
+	r.terminating = true
+	r.mu.Unlock()
+
+	r.writeMu.Lock()
+	committed := make([]journal.Entry, 0, len(warnings))
+	for _, entry := range warnings {
+		seq, err := r.service.journal.Append(r.context, r.id, entry)
+		if err != nil {
+			r.writeMu.Unlock()
+			r.failTerminalTransition()
+			return false
+		}
+		entry.Seq = seq
+		committed = append(committed, entry)
+		r.mu.Lock()
+		r.lastSeq = seq
+		r.mu.Unlock()
+	}
+	r.mu.Lock()
+	_, usage := r.progress.Snapshot()
+	r.mu.Unlock()
+	payload, err := json.Marshal(struct {
+		Code      string     `json:"code"`
+		Message   string     `json:"message"`
+		Reason    string     `json:"reason"`
+		Retriable bool       `json:"retriable"`
+		Usage     tokenUsage `json:"usage"`
+	}{
+		Code: "migration_refused", Message: "continuation is not safe", Reason: reason, Usage: usage,
+	})
+	if err != nil {
+		r.writeMu.Unlock()
+		r.failTerminalTransition()
+		return false
+	}
+	closeContext, cancel := context.WithTimeout(context.Background(), r.service.config.ReadinessTimeout)
+	err = r.service.journal.Close(closeContext, r.id, journal.Entry{Kind: journal.KindError, Payload: payload})
+	cancel()
+	if err != nil {
+		r.writeMu.Unlock()
+		r.failTerminalTransition()
+		return false
+	}
+	r.mu.Lock()
+	r.lastSeq++
+	terminal := journal.Entry{Seq: r.lastSeq, Kind: journal.KindError, Payload: payload}
+	r.terminal = journal.KindError
+	r.terminating = false
+	lease := r.currentLease
+	r.currentLease = nil
+	if estimateWarning {
+		r.estimateWarned = true
+	}
+	if r.orphanTimer != nil {
+		r.orphanTimer.Stop()
+		r.orphanTimer = nil
+	}
+	close(r.done)
+	r.activeDone.Do(r.service.active.Done)
+	r.mu.Unlock()
+	r.writeMu.Unlock()
+
+	// Cancellation happens only after the terminal error is durable.
+	r.cancel(errors.New(reason))
+	lease.Release()
+	for _, entry := range committed {
+		r.publishFirst(entry)
+	}
+	r.publishFirst(terminal)
+	r.refreshIdempotency()
+	time.AfterFunc(r.service.config.JournalTTL, func() {
+		r.service.streams.CompareAndDelete(r.id, r)
+	})
+	return true
+}
+
+func (s *durableService) triggerBindings(reason string, id backend.ID, bindings []backend.Binding) {
+	for _, binding := range bindings {
+		streamID, err := journal.ParseStreamID(binding.Owner)
+		if err != nil {
+			continue
+		}
+		if value, ok := s.streams.Load(streamID); ok {
+			value.(*streamRuntime).triggerMigration(reason, id)
+		}
+	}
+}

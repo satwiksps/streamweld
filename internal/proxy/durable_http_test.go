@@ -74,8 +74,9 @@ func TestDurableHTTPInitialStreamMapsJournalAndHeaders(t *testing.T) {
 	if err := json.Unmarshal(events[0].Data, &openPayload); err != nil {
 		t.Fatalf("decode open payload: %v", err)
 	}
-	if openPayload.StreamID != id || openPayload.Model != "test-model" || openPayload.BackendID != backend.URL {
-		t.Fatalf("open payload = %#v, want stream %s, model test-model, backend %s", openPayload, id, backend.URL)
+	wantBackendID := strings.TrimPrefix(backend.URL, "http://")
+	if openPayload.StreamID != id || openPayload.Model != "test-model" || openPayload.BackendID != wantBackendID {
+		t.Fatalf("open payload = %#v, want stream %s, model test-model, backend %s", openPayload, id, wantBackendID)
 	}
 	requireDurableSSEEvent(t, events[1], "2", "", chatChunkHello)
 	requireDurableSSEEvent(t, events[2], "3", "", chatChunkWorld)

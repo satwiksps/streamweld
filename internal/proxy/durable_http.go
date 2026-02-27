@@ -43,7 +43,7 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 	if !normalized.Stream {
 		restoreRequestBody(request, original)
 		stripStreamweldHeaders(request.Header)
-		h.upstream.ServeHTTP(writer, request)
+		h.proxyFromPool(writer, request)
 		return
 	}
 
@@ -69,10 +69,12 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	if resolution.degraded {
+		degradedBackend := resolution.degradedLease.Backend()
+		defer resolution.degradedLease.Release()
 		writer.Header().Set(headerDurability, durabilityDegraded)
 		restoreRequestBody(request, normalized.Body)
 		stripStreamweldHeaders(request.Header)
-		h.upstream.ServeHTTP(writer, request)
+		h.proxyTo(writer, request, degradedBackend.URL)
 		return
 	}
 

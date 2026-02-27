@@ -81,18 +81,30 @@ func isPresentJSON(value json.RawMessage) bool {
 }
 
 type streamProgress struct {
-	text       []byte
-	usage      tokenUsage
-	exactUsage bool
-	toolCall   bool
+	text                  []byte
+	usage                 tokenUsage
+	exactUsage            bool
+	toolCall              bool
+	attemptCompletionBase uint64
+	attemptPromptBase     uint64
+	textBytesAtUsage      int
 }
 
 func (p *streamProgress) Apply(observation chunkObservation) {
 	p.text = append(p.text, observation.TextDelta...)
 	if observation.Usage != nil {
-		p.usage = *observation.Usage
+		completion := p.attemptCompletionBase + observation.Usage.CompletionTokens
+		prompt := p.attemptPromptBase + observation.Usage.PromptTokens
+		if completion > p.usage.CompletionTokens {
+			p.usage.CompletionTokens = completion
+		}
+		if prompt > p.usage.PromptTokens {
+			p.usage.PromptTokens = prompt
+		}
+		p.usage.TotalTokens = p.usage.PromptTokens + p.usage.CompletionTokens
 		p.usage.Estimated = false
 		p.exactUsage = true
+		p.textBytesAtUsage = len(p.text)
 	}
 	if observation.ToolCall {
 		p.toolCall = true
@@ -101,10 +113,24 @@ func (p *streamProgress) Apply(observation chunkObservation) {
 
 func (p *streamProgress) Snapshot() (string, tokenUsage) {
 	usage := p.usage
-	if !p.exactUsage {
-		usage.CompletionTokens = uint64(len(p.text))
+	extraBytes := len(p.text) - p.textBytesAtUsage
+	if extraBytes < 0 {
+		extraBytes = 0
+	}
+	if !p.exactUsage || extraBytes != 0 {
+		usage.CompletionTokens += uint64(extraBytes)
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		usage.Estimated = true
 	}
 	return string(append([]byte(nil), p.text...)), usage
+}
+
+// BeginAttempt freezes accepted totals before applying attempt-local usage.
+func (p *streamProgress) BeginAttempt() {
+	_, usage := p.Snapshot()
+	p.usage = usage
+	p.attemptCompletionBase = usage.CompletionTokens
+	p.attemptPromptBase = usage.PromptTokens
+	p.textBytesAtUsage = len(p.text)
+	p.exactUsage = !usage.Estimated
 }

@@ -40,6 +40,10 @@ func TestConfigValidate(t *testing.T) {
 		{"stream cap exceeds total", func(c *Config) { c.JournalMaxTotalBytes = 1 }, "cannot exceed total bytes"},
 		{"zero reader lag cap", func(c *Config) { c.ReaderMaxLagBytes = 0 }, "reader max lag bytes must be positive"},
 		{"invalid orphan policy", func(c *Config) { c.OrphanPolicy = "finish_later" }, "orphan policy must be"},
+		{"negative migrations", func(c *Config) { c.MaxMigrations = -1 }, "max migrations cannot be negative"},
+		{"zero seam window", func(c *Config) { c.SeamWindowBytes = 0 }, "seam window bytes must be positive"},
+		{"invalid template mode", func(c *Config) { c.TemplateMode = "risky" }, "template mode must be"},
+		{"zero SSE event limit", func(c *Config) { c.MaxSSEEventBytes = 0 }, "max SSE event bytes must be positive"},
 	}
 
 	for _, test := range tests {
@@ -89,6 +93,18 @@ func TestConfigFromEnv(t *testing.T) {
 		"STREAMWELD_READER_MAX_LAG_BYTES":             "5678",
 		"STREAMWELD_ORPHAN_POLICY":                    "cancel_after",
 		"STREAMWELD_ORPHAN_TIMEOUT":                   "12s",
+		"STREAMWELD_BACKEND_HEALTH_INTERVAL":          "13s",
+		"STREAMWELD_BACKEND_QUARANTINE_WINDOW":        "14s",
+		"STREAMWELD_MAX_MIGRATIONS":                   "4",
+		"STREAMWELD_MAX_MIGRATION_TOKENS":             "9000",
+		"STREAMWELD_MAX_STREAM_DURATION":              "16m",
+		"STREAMWELD_ALLOW_CROSS_VERSION":              "true",
+		"STREAMWELD_ALLOW_STRUCTURED_RESUME":          "true",
+		"STREAMWELD_SEAM_WINDOW_BYTES":                "96",
+		"STREAMWELD_TEMPLATE_MODE":                    "permissive",
+		"STREAMWELD_STALL_DETECTION_ENABLED":          "true",
+		"STREAMWELD_STALL_TIMEOUT":                    "17s",
+		"STREAMWELD_MAX_SSE_EVENT_BYTES":              "1048577",
 	}
 	config, err := ConfigFromEnv(mapLookup(values))
 	if err != nil {
@@ -120,6 +136,15 @@ func TestConfigFromEnv(t *testing.T) {
 	if config.JournalTTL != 11*time.Minute || config.OrphanPolicy != OrphanCancelAfter || config.OrphanTimeout != 12*time.Second {
 		t.Errorf("durability environment values not applied: %+v", config)
 	}
+	if config.BackendHealthInterval != 13*time.Second || config.BackendQuarantineWindow != 14*time.Second || config.MaxStreamDuration != 16*time.Minute || config.StallTimeout != 17*time.Second {
+		t.Errorf("migration duration values not applied: %+v", config)
+	}
+	if config.MaxMigrations != 4 || config.MaxMigrationTokens != 9000 || config.SeamWindowBytes != 96 || config.MaxSSEEventBytes != 1048577 {
+		t.Errorf("migration limit values not applied: %+v", config)
+	}
+	if !config.AllowCrossVersion || !config.AllowStructuredResume || !config.StallDetectionEnabled || config.TemplateMode != "permissive" {
+		t.Errorf("migration policy values not applied: %+v", config)
+	}
 }
 
 func TestConfigFromEnvRejectsMalformedValues(t *testing.T) {
@@ -128,6 +153,9 @@ func TestConfigFromEnvRejectsMalformedValues(t *testing.T) {
 		{"STREAMWELD_DIAL_TIMEOUT": "soon"},
 		{"STREAMWELD_MAX_HEADER_BYTES": "many"},
 		{"STREAMWELD_JOURNAL_MAX_TOTAL_BYTES": "limitless"},
+		{"STREAMWELD_MAX_MIGRATIONS": "several"},
+		{"STREAMWELD_MAX_MIGRATION_TOKENS": "all"},
+		{"STREAMWELD_ALLOW_CROSS_VERSION": "sometimes"},
 	} {
 		if _, err := ConfigFromEnv(mapLookup(values)); err == nil {
 			t.Fatalf("ConfigFromEnv(%v) returned nil error", values)
