@@ -10,6 +10,11 @@ its original bytes are then restored before proxy forwarding.
 
 The protocol is defined in [`docs/protocol.md`](docs/protocol.md). The implementation is being built in the ordered phases recorded in [`streamweld-build-spec.md`](streamweld-build-spec.md); claims and performance numbers are published only when backed by reproducible tests.
 
+Before allowing producer migration for a model, probe its chat-template
+continuation behavior with `streamweldctl doctor --backend URL --model NAME`.
+The checker and the honestly scoped results table are documented in
+[`docs/compatibility.md`](docs/compatibility.md).
+
 ## Development prerequisites
 
 - Go 1.23 or newer
