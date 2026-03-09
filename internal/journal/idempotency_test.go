@@ -136,6 +136,35 @@ func TestRemoveAndExpireOperateOnlyOnDigests(t *testing.T) {
 	}
 }
 
+func TestRemoveIfBoundCannotDeleteReplacementWinner(t *testing.T) {
+	t.Parallel()
+	registry := NewMemoryIdempotencyRegistry(nil)
+	ctx := context.Background()
+	staleID := mustIdempotencyID(t, "0000000000000000000000000c")
+	winnerID := mustIdempotencyID(t, "0000000000000000000000000d")
+	binding, err := registry.ResolveOrCreate(ctx, "conditional-remove", staleID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed, removeErr := registry.RemoveIfBound(ctx, binding.Digest, winnerID); removeErr != nil || removed {
+		t.Fatalf("RemoveIfBound(different ID) = (%t, %v), want (false, nil)", removed, removeErr)
+	}
+	resolved, err := registry.ResolveOrCreate(ctx, "conditional-remove", winnerID, time.Minute)
+	if err != nil || resolved.ID != staleID || resolved.Created {
+		t.Fatalf("binding after rejected cleanup = (%+v, %v), want stale binding intact", resolved, err)
+	}
+	if removed, removeErr := registry.RemoveIfBound(ctx, binding.Digest, staleID); removeErr != nil || !removed {
+		t.Fatalf("RemoveIfBound(matching ID) = (%t, %v), want (true, nil)", removed, removeErr)
+	}
+	replacement, err := registry.ResolveOrCreate(ctx, "conditional-remove", winnerID, time.Minute)
+	if err != nil || replacement.ID != winnerID || !replacement.Created {
+		t.Fatalf("replacement binding = (%+v, %v), want new winner", replacement, err)
+	}
+	if removed, removeErr := registry.RemoveIfBound(ctx, binding.Digest, staleID); removeErr != nil || removed {
+		t.Fatalf("stale RemoveIfBound(after replacement) = (%t, %v), want (false, nil)", removed, removeErr)
+	}
+}
+
 func TestRegistryNeverStoresRawKeys(t *testing.T) {
 	t.Parallel()
 	const rawKey = "never-retain-this-client-secret"
@@ -375,6 +404,10 @@ func TestRegistryHonorsContext(t *testing.T) {
 		}},
 		{"remove", func(ctx context.Context) error {
 			_, err := registry.Remove(ctx, digest)
+			return err
+		}},
+		{"conditional remove", func(ctx context.Context) error {
+			_, err := registry.RemoveIfBound(ctx, digest, id)
 			return err
 		}},
 		{"expire", func(ctx context.Context) error {

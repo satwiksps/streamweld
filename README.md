@@ -76,7 +76,44 @@ Drain one registered backend and wait for its leases to reach zero:
 curl -X POST 'http://127.0.0.1:8080/internal/backends/127.0.0.1%3A8000/drain?timeout=10s'
 ```
 
-The default memory journal is bounded and intended for one proxy replica.
-Redis-backed cross-replica durability is configured for production installs.
+### Redis and multi-replica mode
+
+The default memory journal is bounded, process-local, and supports exactly one
+proxy replica. A process restart loses its journals and idempotency bindings.
+Do not place multiple memory-mode proxies behind a load balancer, even with
+sticky sessions.
+
+For cross-replica resume, run Redis and configure every proxy replica with the
+same URL and a deployment-unique key prefix:
+
+```sh
+go run ./cmd/streamweld-proxy \
+  --backend http://127.0.0.1:8000 \
+  --journal-backend redis \
+  --redis-url redis://127.0.0.1:6379/0 \
+  --redis-key-prefix streamweld
+```
+
+Redis alone lets any replica replay or tail committed events while Redis is
+reachable. For a remote reader to keep receiving an uncommitted suffix if
+Redis fails, every replica must also enable the private owner relay. Production
+relay traffic uses a separate listener with TLS 1.3 mutual authentication; see
+[`docs/operations.md`](docs/operations.md#owner-relay-for-redis-outages) for the
+complete configuration and certificate requirements. The same private relay
+routes an explicit stop to the producer owner when the public request reaches a
+different replica.
+
+If Redis is unavailable before a stream opens, the request proceeds as a
+non-resumable pass-through response with `X-Streamweld-Durability: degraded`
+and no stream ID. If Redis disappears after a durable stream opens, readers
+already attached to the producer owner's bounded local feed—including readers
+already connected through its relay—receive an always-visible
+`journal_degraded` warning and the remaining complete SSE events without
+sequence IDs. That suffix and its terminal outcome cannot be replayed, even if
+Redis later recovers. A new remote reader cannot discover the owner while
+Redis is unavailable.
+
+The Phase 5 Redis and outage acceptance commands are documented in
+[`docs/operations.md`](docs/operations.md#reproduce-the-phase-5-acceptance-tests).
 
 Streamweld is licensed under Apache-2.0.

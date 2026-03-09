@@ -10,8 +10,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
 
+	redislib "github.com/redis/go-redis/v9"
 	"github.com/streamweld/streamweld/internal/backend"
 	"github.com/streamweld/streamweld/internal/conformance"
 	"github.com/streamweld/streamweld/internal/journal"
@@ -116,6 +119,11 @@ type Server struct {
 	readiness   *readinessGate
 	durable     *durableService
 	backendPool *backend.Pool
+	relay       *relayCoordinator
+
+	journalClose     func() error
+	journalCloseOnce sync.Once
+	journalCloseErr  error
 }
 
 // NewServer validates config and constructs a proxy without opening a listener.
@@ -170,22 +178,46 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 	if settings.readinessChecker == nil {
 		settings.readinessChecker = newBackendReadinessChecker(target, settings.transport, config.ReadinessTimeout)
 	}
+	var journalClose func() error
 	if settings.journal == nil {
-		memoryConfig := journal.DefaultConfig()
-		memoryConfig.TTL = config.JournalTTL
-		memoryConfig.MaxBytesPerStream = config.JournalMaxBytesPerStream
-		memoryConfig.MaxTotalBytes = config.JournalMaxTotalBytes
-		memoryConfig.ReaderMaxLagBytes = config.ReaderMaxLagBytes
-		settings.journal, err = journal.NewMemory(memoryConfig)
-		if err != nil {
-			return nil, fmt.Errorf("create memory journal: %w", err)
+		switch config.JournalBackend {
+		case JournalBackendMemory:
+			memoryConfig := journal.DefaultConfig()
+			memoryConfig.TTL = config.JournalTTL
+			memoryConfig.MaxBytesPerStream = config.JournalMaxBytesPerStream
+			memoryConfig.MaxTotalBytes = config.JournalMaxTotalBytes
+			memoryConfig.ReaderMaxLagBytes = config.ReaderMaxLagBytes
+			settings.journal, err = journal.NewMemory(memoryConfig)
+			if err != nil {
+				return nil, fmt.Errorf("create memory journal: %w", err)
+			}
+		case JournalBackendRedis:
+			redisOptions, parseErr := ownedRedisClientOptions(config)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			client := redislib.NewClient(redisOptions)
+			redisConfig := journal.DefaultRedisConfig()
+			redisConfig.TTL = config.JournalTTL
+			redisConfig.Prefix = config.RedisKeyPrefix
+			redisConfig.ReaderMaxLagBytes = config.ReaderMaxLagBytes
+			settings.journal, err = journal.NewRedis(client, redisConfig)
+			if err != nil {
+				_ = client.Close()
+				return nil, fmt.Errorf("create Redis journal: %w", err)
+			}
+			journalClose = client.Close
 		}
 	}
 	if settings.ids == nil {
 		settings.ids = journal.NewIDGenerator(nil, nil)
 	}
 	if settings.idempotency == nil {
-		settings.idempotency = journal.NewMemoryIdempotencyRegistry(nil)
+		if registry, ok := settings.journal.(journal.IdempotencyRegistry); ok {
+			settings.idempotency = registry
+		} else {
+			settings.idempotency = journal.NewMemoryIdempotencyRegistry(nil)
+		}
 	}
 
 	readiness := newReadinessGate(settings.readinessChecker)
@@ -201,6 +233,29 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		logger,
 		settings.backendPool,
 	)
+	directory, _ := settings.journal.(journal.OwnerDirectory)
+	relay, err := newRelayCoordinator(relayConfig{
+		ReplicaID:        config.ReplicaID,
+		ListenAddress:    config.RelayListenAddress,
+		AdvertiseURL:     config.RelayAdvertiseURL,
+		CAFile:           config.RelayCAFile,
+		CertificateFile:  config.RelayCertificateFile,
+		PrivateKeyFile:   config.RelayPrivateKeyFile,
+		InsecureDevMode:  config.RelayInsecureDevMode,
+		Heartbeat:        config.RelayHeartbeatInterval,
+		PresenceTTL:      config.RelayPresenceTTL,
+		DialTimeout:      config.DialTimeout,
+		HandshakeTimeout: config.TLSHandshakeTimeout,
+	}, directory, durable, logger)
+	if err != nil {
+		forceCancel()
+		if journalClose != nil {
+			_ = journalClose()
+		}
+		return nil, fmt.Errorf("create owner relay: %w", err)
+	}
+	durable.relay = relay
+	durable.owner = relay.ownerRecord()
 	handler := newHandler(readiness, durable)
 	httpServer := &http.Server{
 		Addr:              config.ListenAddress,
@@ -215,17 +270,51 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 	}
 
 	return &Server{
-		config:      config,
-		target:      target,
-		transport:   settings.transport,
-		handler:     handler,
-		httpServer:  httpServer,
-		logger:      logger,
-		forceCancel: forceCancel,
-		readiness:   readiness,
-		durable:     durable,
-		backendPool: settings.backendPool,
+		config:       config,
+		target:       target,
+		transport:    settings.transport,
+		handler:      handler,
+		httpServer:   httpServer,
+		logger:       logger,
+		forceCancel:  forceCancel,
+		readiness:    readiness,
+		durable:      durable,
+		backendPool:  settings.backendPool,
+		relay:        relay,
+		journalClose: journalClose,
 	}, nil
+}
+
+func ownedRedisClientOptions(config Config) (*redislib.Options, error) {
+	options, err := redislib.ParseURL(config.RedisURL)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse Redis URL %s: invalid connection options",
+			redactedRedisURL(config.RedisURL),
+		)
+	}
+	// Mutating journal operations perform one nonce-safe retry themselves. An
+	// owned go-redis client therefore disables opaque command retries, limits
+	// connection establishment to one attempt, and lets request contexts bound
+	// socket I/O as well as pool waits.
+	options.MaxRetries = -1
+	options.DialerRetries = 1
+	options.ContextTimeoutEnabled = true
+	options.DialTimeout = config.DialTimeout
+	return options, nil
+}
+
+func redactedRedisURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "<redacted>"
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "redis", "rediss", "unix":
+		return strings.ToLower(parsed.Scheme) + "://<redacted>"
+	default:
+		return "<redacted>"
+	}
 }
 
 // Handler returns the server's routing handler.
@@ -256,11 +345,28 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	if listener == nil {
 		return errors.New("listener cannot be nil")
 	}
+	defer func() {
+		if err := s.closeOwnedJournal(); err != nil {
+			s.logger.Warn("close journal client", "error", err)
+		}
+	}()
 	healthContext, stopHealth := context.WithCancel(ctx)
 	defer stopHealth()
 	defer s.forceCancel()
 	defer s.readiness.BeginShutdown()
 	go s.durable.runHealthChecks(healthContext)
+	relayResult, err := s.relay.start(s.durable.rootContext)
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
+		defer cancel()
+		if err := s.relay.shutdown(shutdownContext); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Warn("shutdown owner relay", "error", err)
+		}
+	}()
 
 	s.logger.Info("proxy listening",
 		"address", listener.Addr().String(),
@@ -278,6 +384,13 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			return nil
 		}
 		return fmt.Errorf("serve proxy: %w", err)
+	case err := <-relayResult:
+		_ = s.httpServer.Close()
+		s.closeIdleConnections()
+		if err == nil {
+			return errors.New("owner relay stopped unexpectedly")
+		}
+		return fmt.Errorf("serve owner relay: %w", err)
 	case <-ctx.Done():
 	}
 
@@ -310,9 +423,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.readiness.BeginShutdown()
 	httpErr := s.httpServer.Shutdown(ctx)
-	producerErr := s.durable.wait(ctx)
+	producerErr := s.durable.waitActive(ctx)
+	if producerErr != nil {
+		s.forceCancel()
+	}
+	relayErr := s.relay.shutdown(ctx)
+	s.forceCancel()
+	degradationErr := s.durable.waitDegradation(ctx)
 	s.closeIdleConnections()
-	return errors.Join(httpErr, producerErr)
+	journalErr := s.closeOwnedJournal()
+	return errors.Join(httpErr, producerErr, relayErr, degradationErr, journalErr)
+}
+
+func (s *Server) closeOwnedJournal() error {
+	s.journalCloseOnce.Do(func() {
+		if s.journalClose != nil {
+			s.journalCloseErr = s.journalClose()
+		}
+	})
+	return s.journalCloseErr
 }
 
 func (s *Server) closeIdleConnections() {

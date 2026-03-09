@@ -37,6 +37,9 @@ var (
 	ErrCapacity = errors.New("journal: capacity exceeded")
 	// ErrReaderLagged means a tail reader exceeded its independent lag budget.
 	ErrReaderLagged = errors.New("journal: reader lag exceeded")
+	// ErrDegraded means a post-open durability gap permanently prevents more
+	// sequence allocation for the stream.
+	ErrDegraded = errors.New("journal: stream durability degraded")
 	// ErrInvalidConfig means a memory-backend setting is invalid or missing.
 	ErrInvalidConfig = errors.New("journal: invalid configuration")
 	// ErrInvalidContext means a nil context was supplied.
@@ -78,9 +81,14 @@ type Entry struct {
 
 // Meta is immutable stream metadata captured by Open.
 type Meta struct {
-	Model        string  `json:"model"`
-	ModelVersion *string `json:"model_version"`
-	BackendID    string  `json:"backend_id"`
+	Model        string       `json:"model"`
+	ModelVersion *string      `json:"model_version"`
+	BackendID    string       `json:"backend_id"`
+	Owner        *OwnerRecord `json:"-"`
+	// Idempotency identifies a pending reservation that Open must atomically
+	// promote with the journal. It is private coordination metadata and is never
+	// returned in the open entry or public stream state.
+	Idempotency *IdempotencyDigest `json:"-"`
 
 	// Endpoint and Request are private producer-recovery metadata. Journal
 	// implementations may persist them, but they are never included in the open
@@ -158,6 +166,23 @@ type Journal interface {
 	Tail(ctx context.Context, id StreamID, fromSeq uint64) (<-chan Entry, func(), error)
 	State(ctx context.Context, id StreamID) (StreamState, error)
 	Close(ctx context.Context, id StreamID, terminal Entry) error
+}
+
+// DegradationMarker is an optional extension implemented by journals that can
+// remember a post-open durability gap. Once marked, a stream must never assign
+// another sequence. Read and Tail may replay its committed prefix, but must end
+// with ErrOffsetExpired so callers cannot mistake the prefix for a complete
+// generation.
+type DegradationMarker interface {
+	MarkDegraded(ctx context.Context, id StreamID) error
+}
+
+// ActiveJournalLease is an optional extension for durable stores whose active
+// keys expire server-side. Touch atomically renews all keys required to keep an
+// open journal replayable. Implementations must reject terminal journals so a
+// late refresher cannot extend terminal retention.
+type ActiveJournalLease interface {
+	Touch(ctx context.Context, id StreamID) error
 }
 
 func (kind EntryKind) terminal() bool {

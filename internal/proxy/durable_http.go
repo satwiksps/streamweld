@@ -86,9 +86,23 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 		return
 	}
 
-	resolution.runtime.attachReader()
+	if !resolution.runtime.attachReader() {
+		writeJournalHTTPError(writer, journal.ErrTerminalState, id)
+		return
+	}
+	subscription, subscribed := resolution.runtime.degradedFeed.subscribe(true)
+	if !subscribed {
+		resolution.runtime.detachReader()
+		writeAPIError(writer, http.StatusServiceUnavailable, "stream_unavailable", "stream could not attach its initial reader")
+		return
+	}
 	var detachOnce sync.Once
-	detach := func() { detachOnce.Do(resolution.runtime.detachReader) }
+	detach := func() {
+		detachOnce.Do(func() {
+			subscription.unsubscribe()
+			resolution.runtime.detachReader()
+		})
+	}
 	stopDisconnectWatch := context.AfterFunc(request.Context(), detach)
 	rejection, startErr := h.durable.start(resolution.runtime, request.URL.RawQuery)
 	if !stopDisconnectWatch() || request.Context().Err() != nil {
@@ -106,7 +120,7 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	defer detach()
-	h.serveInitialJournal(writer, request, resolution.runtime, verbose)
+	h.serveInitialJournal(writer, request, resolution.runtime, subscription, verbose)
 }
 
 func (h *Handler) handleStreamRoute(writer http.ResponseWriter, request *http.Request) {
@@ -167,10 +181,74 @@ func (h *Handler) serveJournal(
 	cursor uint64,
 	verbose bool,
 ) {
-	flusher, ok := writer.(http.Flusher)
-	if !ok {
+	runtime, local := h.durable.loadRuntime(id)
+	if !local && h.durable.relay != nil && h.durable.relay.tryServeRemoteEvents(writer, request, id, cursor, verbose) {
+		return
+	}
+	h.serveLocalJournal(writer, request, id, cursor, verbose, runtime)
+}
+
+func (h *Handler) serveLocalJournal(
+	writer http.ResponseWriter,
+	request *http.Request,
+	id journal.StreamID,
+	cursor uint64,
+	verbose bool,
+	runtime *streamRuntime,
+) {
+	if _, ok := writer.(http.Flusher); !ok {
 		writeAPIError(writer, http.StatusInternalServerError, "streaming_unsupported", "HTTP response streaming is unavailable")
 		return
+	}
+	streamWriter := newStreamResponseWriter(writer, h.durable.config.ReaderWriteTimeout)
+	defer streamWriter.clearDeadline()
+	local := runtime != nil
+	if !local {
+		releaseReader, err := h.durable.acquireDistributedReader(request.Context(), id)
+		if err != nil {
+			writeJournalHTTPError(writer, err, id)
+			return
+		}
+		defer releaseReader()
+	} else {
+		// Linearize attachment before any potentially blocking journal lookup.
+		// Once a local resume request has reached its owner runtime, orphan
+		// cancellation must observe that reader even if State or Tail is slow.
+		if !runtime.attachReader() {
+			writeJournalHTTPError(writer, journal.ErrTerminalState, id)
+			return
+		}
+		defer runtime.detachReader()
+	}
+	var subscription *degradedSubscription
+	var localGapBoundary *uint64
+	if local {
+		boundary, active := runtime.degradedFeed.status()
+		if active {
+			if cursor == boundary {
+				writeJournalHTTPError(writer, journal.ErrOffsetExpired, id)
+				return
+			}
+			if cursor < boundary {
+				localGapBoundary = &boundary
+			}
+		} else if candidate, subscribed := runtime.degradedFeed.subscribe(false); subscribed {
+			subscription = candidate
+			defer subscription.unsubscribe()
+		} else {
+			// Degradation won the race with subscription. Preserve the local
+			// boundary even while the durable marker is still retrying.
+			boundary, active = runtime.degradedFeed.status()
+			if active {
+				if cursor == boundary {
+					writeJournalHTTPError(writer, journal.ErrOffsetExpired, id)
+					return
+				}
+				if cursor < boundary {
+					localGapBoundary = &boundary
+				}
+			}
+		}
 	}
 	state, err := h.durable.journal.State(request.Context(), id)
 	if err != nil {
@@ -184,11 +262,6 @@ func (h *Handler) serveJournal(
 	}
 	defer cancel()
 
-	if runtime, exists := h.durable.loadRuntime(id); exists {
-		runtime.attachReader()
-		defer runtime.detachReader()
-	}
-
 	writer.Header().Set(headerStreamID, id.String())
 	writer.Header().Set(headerDurability, durabilityDurable)
 	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -196,43 +269,20 @@ func (h *Handler) serveJournal(
 	writer.Header().Set("X-Accel-Buffering", "no")
 	writer.WriteHeader(http.StatusOK)
 	if request.Method == http.MethodGet {
-		flusher.Flush()
+		if !h.flushStreamResponse(request, id, streamWriter) {
+			return
+		}
 	}
 
-	sseWriter := NewJournalSSEWriter(writer, verbose)
-	wroteTerminal := false
-	for entry := range events {
-		if entry.Err != nil {
-			if errors.Is(entry.Err, journal.ErrReaderLagged) {
-				_ = sseWriter.WriteReaderLagError()
-				flusher.Flush()
-			}
-			return
-		}
-		result, writeErr := sseWriter.WriteEntry(entry)
-		if writeErr != nil {
-			h.durable.logger.ErrorContext(request.Context(), "write journal SSE entry",
-				"stream_id", id,
-				"seq", entry.Seq,
-				"error", writeErr,
-			)
-			return
-		}
-		// On an initial POST, keep the small open control frame in the same
-		// write batch as the first token. Besides reducing syscalls, this avoids
-		// delayed-ACK latency between two tiny chunks while preserving open as
-		// the first SSE event.
-		if result.Visible && (request.Method != http.MethodPost || entry.Kind != journal.KindOpen) {
-			flusher.Flush()
-		}
-		if result.Terminal {
-			wroteTerminal = true
-			break
-		}
-	}
+	sseWriter := NewJournalSSEWriter(streamWriter, verbose)
+	wroteTerminal := h.serveJournalTail(
+		request, id, events, cancel, sseWriter, streamWriter, cursor, state.LastSeq,
+		subscription, localGapBoundary,
+	)
 	if !wroteTerminal && state.Terminal != nil && state.Terminal.Kind == journal.KindDone && cursor == state.Terminal.Seq {
-		_ = sseWriter.WriteDoneSentinel()
-		flusher.Flush()
+		if err := sseWriter.WriteDoneSentinel(); err == nil {
+			_ = h.flushStreamResponse(request, id, streamWriter)
+		}
 	}
 }
 
@@ -240,13 +290,15 @@ func (h *Handler) serveInitialJournal(
 	writer http.ResponseWriter,
 	request *http.Request,
 	runtime *streamRuntime,
+	subscription *degradedSubscription,
 	verbose bool,
 ) {
-	flusher, ok := writer.(http.Flusher)
-	if !ok {
+	if _, ok := writer.(http.Flusher); !ok {
 		writeAPIError(writer, http.StatusInternalServerError, "streaming_unsupported", "HTTP response streaming is unavailable")
 		return
 	}
+	streamWriter := newStreamResponseWriter(writer, h.durable.config.ReaderWriteTimeout)
+	defer streamWriter.clearDeadline()
 	writer.Header().Set(headerStreamID, runtime.id.String())
 	writer.Header().Set(headerDurability, durabilityDurable)
 	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -254,15 +306,24 @@ func (h *Handler) serveInitialJournal(
 	writer.Header().Set("X-Accel-Buffering", "no")
 	writer.WriteHeader(http.StatusOK)
 
-	sseWriter := NewJournalSSEWriter(writer, verbose)
+	sseWriter := NewJournalSSEWriter(streamWriter, verbose)
 	if _, err := sseWriter.WriteEntry(runtime.openEntry); err != nil {
 		h.durable.logger.ErrorContext(request.Context(), "write initial open event", "stream_id", runtime.id, "error", err)
 		return
 	}
+	subscription.acknowledge(runtime.openEntry.Seq)
 
 	var first journal.Entry
 	select {
 	case first = <-runtime.firstEntry:
+	case <-subscription.activated():
+		h.serveDegradedFeed(request, runtime.id, sseWriter, streamWriter, subscription)
+		return
+	case <-subscription.evicted():
+		if err := sseWriter.WriteReaderLagError(); err == nil {
+			_ = h.flushStreamResponse(request, runtime.id, streamWriter)
+		}
+		return
 	case <-request.Context().Done():
 		return
 	}
@@ -273,39 +334,181 @@ func (h *Handler) serveInitialJournal(
 		return
 	}
 	if result.Visible {
-		flusher.Flush()
+		if !h.flushStreamResponse(request, runtime.id, streamWriter) {
+			return
+		}
 	}
+	subscription.acknowledge(first.Seq)
 	if result.Terminal {
 		return
 	}
 
 	events, cancel, err := h.durable.journal.Tail(request.Context(), runtime.id, first.Seq)
 	if err != nil {
-		h.durable.logger.ErrorContext(request.Context(), "tail initial durable stream", "stream_id", runtime.id, "error", err)
+		// This subscription predates every producer commit, so its bounded
+		// shadow queue is a complete continuation even if Tail itself failed.
+		h.serveDegradedFeed(request, runtime.id, sseWriter, streamWriter, subscription)
 		return
 	}
 	defer cancel()
-	for entry := range events {
-		if entry.Err != nil {
-			if errors.Is(entry.Err, journal.ErrReaderLagged) {
-				_ = sseWriter.WriteReaderLagError()
-				flusher.Flush()
+	h.serveJournalTail(
+		request, runtime.id, events, cancel, sseWriter, streamWriter, first.Seq, first.Seq,
+		subscription, nil,
+	)
+}
+
+func (h *Handler) serveJournalTail(
+	request *http.Request,
+	id journal.StreamID,
+	events <-chan journal.Entry,
+	cancel func(),
+	sseWriter *JournalSSEWriter,
+	streamWriter *streamResponseWriter,
+	lastSeq uint64,
+	relayStartSeq uint64,
+	subscription *degradedSubscription,
+	localGapBoundary *uint64,
+) bool {
+	var activated <-chan struct{}
+	var evicted <-chan struct{}
+	degraded := false
+	if subscription != nil {
+		activated = subscription.activated()
+		evicted = subscription.evicted()
+	}
+	for {
+		if localGapBoundary != nil && lastSeq >= *localGapBoundary {
+			cancel()
+			if err := sseWriter.WriteOffsetExpiredError(id); err == nil {
+				_ = h.flushStreamResponse(request, id, streamWriter)
 			}
-			return
+			return true
 		}
-		mapped, writeErr := sseWriter.WriteEntry(entry)
-		if writeErr != nil {
-			h.durable.logger.ErrorContext(request.Context(), "write initial journal SSE entry",
-				"stream_id", runtime.id, "seq", entry.Seq, "error", writeErr)
-			return
+		if degraded && lastSeq >= relayStartSeq {
+			cancel()
+			return h.serveDegradedFeed(request, id, sseWriter, streamWriter, subscription)
 		}
-		if mapped.Visible {
-			flusher.Flush()
-		}
-		if mapped.Terminal {
-			return
+		select {
+		case <-activated:
+			degraded = true
+			activated = nil
+		case <-evicted:
+			cancel()
+			if err := sseWriter.WriteReaderLagError(); err == nil {
+				_ = h.flushStreamResponse(request, id, streamWriter)
+			}
+			return true
+		case entry, open := <-events:
+			if !open {
+				if subscription != nil && lastSeq >= relayStartSeq {
+					cancel()
+					return h.serveDegradedFeed(request, id, sseWriter, streamWriter, subscription)
+				}
+				return false
+			}
+			if entry.Err != nil {
+				if subscription != nil && lastSeq >= relayStartSeq {
+					cancel()
+					return h.serveDegradedFeed(request, id, sseWriter, streamWriter, subscription)
+				}
+				switch {
+				case errors.Is(entry.Err, journal.ErrReaderLagged):
+					if err := sseWriter.WriteReaderLagError(); err == nil {
+						_ = h.flushStreamResponse(request, id, streamWriter)
+					}
+				case errors.Is(entry.Err, journal.ErrOffsetExpired):
+					if err := sseWriter.WriteOffsetExpiredError(id); err == nil {
+						_ = h.flushStreamResponse(request, id, streamWriter)
+					}
+				}
+				return false
+			}
+			result, writeErr := sseWriter.WriteEntry(entry)
+			if writeErr != nil {
+				h.durable.logger.ErrorContext(request.Context(), "write journal SSE entry",
+					"stream_id", id,
+					"seq", entry.Seq,
+					"error", writeErr,
+				)
+				return false
+			}
+			lastSeq = entry.Seq
+			if subscription != nil {
+				subscription.acknowledge(entry.Seq)
+			}
+			// On an initial POST, keep the small open control frame in the same
+			// write batch as the first token. Besides reducing syscalls, this avoids
+			// delayed-ACK latency between two tiny chunks while preserving open as
+			// the first SSE event.
+			if result.Visible && (request.Method != http.MethodPost || entry.Kind != journal.KindOpen) {
+				if !h.flushStreamResponse(request, id, streamWriter) {
+					return false
+				}
+			}
+			if result.Terminal {
+				return true
+			}
+		case <-request.Context().Done():
+			return false
 		}
 	}
+}
+
+func (h *Handler) serveDegradedFeed(
+	request *http.Request,
+	id journal.StreamID,
+	sseWriter *JournalSSEWriter,
+	streamWriter *streamResponseWriter,
+	subscription *degradedSubscription,
+) bool {
+	for {
+		frame, ok, nextErr := subscription.next(request.Context())
+		if errors.Is(nextErr, journal.ErrReaderLagged) {
+			if err := sseWriter.WriteReaderLagError(); err == nil {
+				_ = h.flushStreamResponse(request, id, streamWriter)
+			}
+			return true
+		}
+		if nextErr != nil {
+			return false
+		}
+		if !ok {
+			return false
+		}
+		var result SSEWriteResult
+		var err error
+		if frame.entry != nil {
+			result, err = sseWriter.WriteEntry(*frame.entry)
+		} else {
+			result, err = sseWriter.WriteDegradedFrame(frame)
+		}
+		if err != nil {
+			h.durable.logger.ErrorContext(request.Context(), "write degraded SSE frame",
+				"stream_id", id, "error", err)
+			return false
+		}
+		if result.Visible {
+			if !h.flushStreamResponse(request, id, streamWriter) {
+				return false
+			}
+		}
+		if result.Terminal {
+			return true
+		}
+	}
+}
+
+func (h *Handler) flushStreamResponse(
+	request *http.Request,
+	id journal.StreamID,
+	writer *streamResponseWriter,
+) bool {
+	if err := writer.Flush(); err != nil {
+		h.durable.logger.DebugContext(request.Context(), "flush downstream stream",
+			"stream_id", id, "error", err)
+		return false
+	}
+	return true
 }
 
 func (h *Handler) handleStreamState(writer http.ResponseWriter, request *http.Request, id journal.StreamID) {
@@ -316,14 +519,37 @@ func (h *Handler) handleStreamState(writer http.ResponseWriter, request *http.Re
 	}
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(writer).Encode(state); err != nil {
+	if err := json.NewEncoder(writer).Encode(publicStreamState(state)); err != nil {
 		h.durable.logger.WarnContext(request.Context(), "write stream state", "stream_id", id, "error", err)
 	}
+}
+
+func publicStreamState(state journal.StreamState) journal.StreamState {
+	if state.Terminal == nil || state.Terminal.Kind != journal.KindStopped {
+		return state
+	}
+	var private struct {
+		Usage tokenUsage `json:"usage"`
+	}
+	_ = json.Unmarshal(state.Terminal.Payload, &private)
+	payload, err := json.Marshal(struct {
+		Usage tokenUsage `json:"usage"`
+	}{Usage: private.Usage})
+	if err != nil {
+		payload = []byte(`{}`)
+	}
+	terminal := *state.Terminal
+	terminal.Payload = payload
+	state.Terminal = &terminal
+	return state
 }
 
 func (h *Handler) handleStreamStop(writer http.ResponseWriter, request *http.Request, id journal.StreamID) {
 	runtime, exists := h.durable.loadRuntime(id)
 	if !exists {
+		if h.durable.relay != nil && h.durable.relay.tryServeRemoteStop(writer, request, id) {
+			return
+		}
 		state, err := h.durable.journal.State(request.Context(), id)
 		if err != nil {
 			writeJournalHTTPError(writer, err, id)
@@ -334,12 +560,28 @@ func (h *Handler) handleStreamStop(writer http.ResponseWriter, request *http.Req
 			return
 		}
 		if state.Status == journal.StatusStopped {
-			writeStreamError(writer, http.StatusServiceUnavailable, "stream_owner_unavailable", "stopped stream result is unavailable on this proxy", id.String())
+			result, decodeErr := stoppedResponseFromState(id, state)
+			if decodeErr != nil {
+				h.durable.logger.ErrorContext(request.Context(), "decode persisted stop result",
+					"stream_id", id, "error", decodeErr)
+				writeStreamError(writer, http.StatusServiceUnavailable, "stop_result_unavailable", "persisted stop result is invalid", id.String())
+				return
+			}
+			h.writeStopResponse(writer, request, result)
 			return
 		}
 		writeStreamError(writer, http.StatusServiceUnavailable, "stream_owner_unavailable", "active stream is owned by another proxy", id.String())
 		return
 	}
+	h.handleLocalStreamStop(writer, request, id, runtime)
+}
+
+func (h *Handler) handleLocalStreamStop(
+	writer http.ResponseWriter,
+	request *http.Request,
+	id journal.StreamID,
+	runtime *streamRuntime,
+) {
 	result, err := runtime.stop()
 	if err != nil {
 		if errors.Is(err, journal.ErrTerminalState) {
@@ -349,12 +591,43 @@ func (h *Handler) handleStreamStop(writer http.ResponseWriter, request *http.Req
 		writeStreamError(writer, http.StatusServiceUnavailable, "stop_failed", "stream could not be stopped durably", id.String())
 		return
 	}
+	h.writeStopResponse(writer, request, result)
+}
+
+func (h *Handler) writeStopResponse(
+	writer http.ResponseWriter,
+	request *http.Request,
+	result stopResponse,
+) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(http.StatusAccepted)
 	if err := json.NewEncoder(writer).Encode(result); err != nil {
-		h.durable.logger.WarnContext(request.Context(), "write stop response", "stream_id", id, "error", err)
+		h.durable.logger.WarnContext(request.Context(), "write stop response", "stream_id", result.StreamID, "error", err)
 	}
+}
+
+func stoppedResponseFromState(id journal.StreamID, state journal.StreamState) (stopResponse, error) {
+	if state.StreamID != id || state.Status != journal.StatusStopped ||
+		state.Terminal == nil || state.Terminal.Kind != journal.KindStopped {
+		return stopResponse{}, errors.New("stopped state has no matching stopped terminal")
+	}
+	var payload struct {
+		PartialText *string     `json:"partial_text"`
+		Usage       *tokenUsage `json:"usage"`
+	}
+	if err := json.Unmarshal(state.Terminal.Payload, &payload); err != nil {
+		return stopResponse{}, fmt.Errorf("decode stopped terminal payload: %w", err)
+	}
+	if payload.PartialText == nil || payload.Usage == nil {
+		return stopResponse{}, errors.New("stopped terminal payload is missing partial_text or usage")
+	}
+	return stopResponse{
+		StreamID:    id,
+		Outcome:     "stopped",
+		PartialText: *payload.PartialText,
+		Usage:       *payload.Usage,
+	}, nil
 }
 
 var errRequestBodyTooLarge = errors.New("request body too large")
@@ -457,6 +730,8 @@ func writeJournalHTTPError(writer http.ResponseWriter, err error, id journal.Str
 		writeStreamError(writer, http.StatusGone, "stream_not_resumable", "stream was explicitly stopped", id.String())
 	case errors.Is(err, journal.ErrCursorAhead):
 		writeStreamError(writer, http.StatusConflict, "cursor_ahead", "resume cursor is ahead of the stream", id.String())
+	case errors.Is(err, journal.ErrTerminalState):
+		writeStreamError(writer, http.StatusConflict, "stream_closing", "stream is closing and cannot accept a new reader", id.String())
 	default:
 		writeStreamError(writer, http.StatusServiceUnavailable, "journal_unavailable", "stream journal is temporarily unavailable", id.String())
 	}

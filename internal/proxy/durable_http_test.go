@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -421,6 +422,44 @@ func TestDurableHTTPDisconnectDiffersFromStopAndStateIsRedacted(t *testing.T) {
 	resumeResponse := doDurableHTTPRequest(t, harness.client, resumeRequest)
 	defer func() { _ = resumeResponse.Body.Close() }()
 	requireDurableStreamError(t, resumeResponse, http.StatusGone, "stream_not_resumable", id.String())
+}
+
+func TestPersistedStopWithMalformedPayloadFailsWithoutLeakingPayload(t *testing.T) {
+	config := journal.DefaultConfig()
+	config.MaxTotalBytes = 1 << 20
+	config.ReaderMaxLagBytes = 1 << 10
+	memory, err := journal.NewMemory(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := journal.NewStreamID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.Open(context.Background(), id, journal.Meta{Model: "model", BackendID: "backend"}); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "malformed-terminal-secret"
+	if err := memory.Close(context.Background(), id, journal.Entry{
+		Kind: journal.KindStopped, Payload: json.RawMessage(`{"secret":"malformed-terminal-secret"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := &Handler{durable: &durableService{
+		journal: memory,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequestWithContext(
+		context.Background(), http.MethodPost, "/v1/streams/"+id.String()+"/stop", nil,
+	)
+	handler.handleStreamStop(recorder, request, id)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("malformed persisted stop status = %d, want 503", recorder.Code)
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, `"code":"stop_result_unavailable"`) || strings.Contains(body, secret) {
+		t.Fatalf("malformed persisted stop body = %q", body)
+	}
 }
 
 func TestDurableHTTPResumeRejectsMalformedAheadAndUnknownCursors(t *testing.T) {

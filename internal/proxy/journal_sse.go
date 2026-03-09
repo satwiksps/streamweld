@@ -144,6 +144,53 @@ func (writer *JournalSSEWriter) WriteReaderLagError() error {
 	return nil
 }
 
+// WriteDegradedFrame writes a process-local frame after sequence allocation
+// has permanently stopped. Such frames deliberately never carry an SSE id.
+func (writer *JournalSSEWriter) WriteDegradedFrame(frame degradedFrame) (SSEWriteResult, error) {
+	if err := writer.ready(); err != nil {
+		return SSEWriteResult{}, err
+	}
+	if frame.verboseOnly && !writer.verbose {
+		return SSEWriteResult{}, nil
+	}
+	event := frame.event
+	event.ID = ""
+	event.HasID = false
+	if err := writer.encoder.Encode(event); err != nil {
+		return SSEWriteResult{}, fmt.Errorf("proxy: write degraded SSE frame: %w", err)
+	}
+	return SSEWriteResult{Visible: true, Terminal: frame.terminal}, nil
+}
+
+// WriteOffsetExpiredError terminates an already-started replay after its
+// committed prefix. HTTP status cannot change after that prefix is written, so
+// the 410 condition is represented as an unsequenced stream error. A cursor at
+// the end of the prefix is rejected with HTTP 410 before streaming begins.
+func (writer *JournalSSEWriter) WriteOffsetExpiredError(streamID journal.StreamID) error {
+	payload, err := json.Marshal(struct {
+		Code     string `json:"code"`
+		Message  string `json:"message"`
+		StreamID string `json:"stream_id"`
+	}{
+		Code:     "stream_offset_expired",
+		Message:  "stream contains an unjournaled gap",
+		StreamID: streamID.String(),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = writer.WriteDegradedFrame(degradedFrame{
+		event: sse.Event{
+			Type:    streamErrorEvent,
+			Data:    payload,
+			HasType: true,
+			HasData: true,
+		},
+		terminal: true,
+	})
+	return err
+}
+
 func (writer *JournalSSEWriter) ready() error {
 	if writer == nil || writer.encoder == nil {
 		return errors.New("proxy: journal SSE writer is not initialized")

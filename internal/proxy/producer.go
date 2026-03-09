@@ -585,19 +585,49 @@ func (r *streamRuntime) appendNonTerminal(entries []journal.Entry) error {
 		r.mu.Unlock()
 		return journal.ErrTerminalState
 	}
+	degraded := r.degraded
 	r.mu.Unlock()
-	for _, entry := range entries {
-		seq, err := r.service.journal.Append(r.context, r.id, entry)
+	for index, entry := range entries {
+		if degraded {
+			frames, err := degradedFramesForEntries(entries[index:])
+			if err != nil {
+				return err
+			}
+			return r.degradedFeed.append(r.context, frames...)
+		}
+		mutationContext, cancelMutation := r.journalMutationContext()
+		seq, err := r.service.journal.Append(mutationContext, r.id, entry)
+		cancelMutation()
 		if err != nil {
-			return err
+			frames, frameErr := degradedFramesForEntries(entries[index:])
+			if frameErr != nil {
+				return errors.Join(err, frameErr)
+			}
+			r.enterJournalDegradedLocked(err, frames...)
+			return nil
 		}
 		entry.Seq = seq
 		r.mu.Lock()
 		r.lastSeq = seq
 		r.mu.Unlock()
+		if err := r.degradedFeed.publishCommitted(r.context, entry); err != nil {
+			return err
+		}
 		r.publishFirst(entry)
 	}
 	return nil
+}
+
+func degradedFramesForEntries(entries []journal.Entry) ([]degradedFrame, error) {
+	frames := make([]degradedFrame, 0, len(entries))
+	for _, entry := range entries {
+		frame, err := degradedEntryFrame(entry)
+		if err != nil {
+			return nil, err
+		}
+		frames = append(frames, frame)
+	}
+	return frames, nil
 }
 
 func (r *streamRuntime) flushSeam(
@@ -814,7 +844,9 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 	r.writeMu.Lock()
 	committed := make([]journal.Entry, 0, len(warnings))
 	for _, entry := range warnings {
-		seq, err := r.service.journal.Append(r.context, r.id, entry)
+		mutationContext, cancelMutation := r.journalMutationContext()
+		seq, err := r.service.journal.Append(mutationContext, r.id, entry)
+		cancelMutation()
 		if err != nil {
 			r.writeMu.Unlock()
 			r.failTerminalTransition()
@@ -825,6 +857,11 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 		r.mu.Lock()
 		r.lastSeq = seq
 		r.mu.Unlock()
+		if relayErr := r.degradedFeed.publishCommitted(r.context, entry); relayErr != nil {
+			r.writeMu.Unlock()
+			r.failTerminalTransition()
+			return false
+		}
 	}
 	r.mu.Lock()
 	_, usage := r.progress.Snapshot()
@@ -868,6 +905,10 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 	close(r.done)
 	r.activeDone.Do(r.service.active.Done)
 	r.mu.Unlock()
+	if relayErr := r.degradedFeed.publishCommitted(r.service.rootContext, terminal); relayErr != nil {
+		r.service.logger.Warn("relay committed migration refusal", "stream_id", r.id, "error", relayErr)
+	}
+	r.degradedFeed.close()
 	r.writeMu.Unlock()
 
 	// Cancellation happens only after the terminal error is durable.

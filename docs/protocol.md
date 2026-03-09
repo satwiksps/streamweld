@@ -418,8 +418,9 @@ or while refreshed by active writes. The producer's normal path performs the
 append needed for durability but no read or tail round trip when no reader is
 resuming; the initial attached reader may be fed from the producer after commit.
 
-Memory mode is single-proxy-replica only. Cross-replica replay and proxy
-failover require Redis.
+Memory mode is single-proxy-replica only. Its journals and idempotency bindings
+are process-local and do not survive process exit. Cross-replica replay and
+proxy failover require Redis.
 
 ## 6. Downstream SSE representation
 
@@ -487,6 +488,11 @@ another reader. When a reader exceeds the limit, the proxy sends an unsequenced
 is still writable, then closes only that reader. The stream and producer remain
 active, subject to orphan policy after the final reader detaches.
 
+Each downstream stream write and flush is bounded by
+`reader.write_timeout`, default `30s`. When the deadline expires, the proxy
+closes only that reader and detaches it from the stream; producer progress and
+other readers remain unaffected.
+
 SSE heartbeat comments MAY be sent to keep intermediaries from considering an
 idle stream dead. Heartbeats are never journaled and never advance
 `Last-Event-ID`.
@@ -522,6 +528,26 @@ equals its terminal sequence, the response has no events and closes.
 Any number of readers may attach concurrently. A second reader from sequence
 zero receives the complete retained journal and then the same live tail. Reader
 attachment and detachment do not transfer producer ownership.
+
+In Redis mode a non-owner proxy MAY establish a private streaming relay to the
+producer owner before committing the public response headers. This relay is
+needed only to carry live data which may become unjournaled after a Redis
+failure; Redis remains authoritative for committed replay. The owner identity
+and relay URL are private journal metadata and MUST NOT appear in the open event
+or public stream-state response. An events relay request MUST forward only the
+stream identity, cursor, and verbose selection. A stop relay request MUST
+forward only the stream identity and stop operation, with an empty body. Relay
+responses MUST expose only the allowlisted public streaming or stop-response
+headers. Client authorization, cookies, idempotency keys, arbitrary headers,
+and public request bodies MUST NOT cross the internal hop.
+
+A production relay MUST use a separate private listener, TLS 1.3, and mutually
+verified certificates. Plain HTTP is permitted only in an explicitly enabled
+development mode whose listen and advertised endpoints are both loopback. An
+advertised URL MUST route directly to one replica; a load-balanced address does
+not preserve owner routing. Owner presence is leased through Redis so a new
+reader does not route to a stale process. Failure to establish the relay before
+public headers are committed falls back to the Redis tail.
 
 ### 7.2 Resume failures
 
@@ -647,11 +673,21 @@ The response is `202 Accepted`:
 }
 ```
 
+In Redis mode, a relay-enabled non-owner proxy resolves the live owner and
+forwards an empty internal stop request over the same mutually authenticated
+private listener used for event relay. It MUST NOT forward the public request
+body or headers. If the relay is unavailable while shared state remains
+readable, the non-owner surfaces `stream_owner_unavailable`; if Redis is also
+unavailable, it surfaces `journal_unavailable`. It MUST NOT synthesize a stopped
+entry without canceling the owning producer.
+
 Repeated stop calls on an already-stopped stream are idempotent and return the
 same logical result with `202`. A stop racing with `done` or `error` returns
 `409 stream_already_terminal` and does not replace the winning terminal entry.
 Unknown or expired IDs return the section 7.2 response. The stop response is
 not sent until the terminal state is committed, even though its status is 202.
+The stopped terminal payload retains `partial_text` and `usage`, allowing the
+same response to be reconstructed after owner loss or a proxy restart.
 
 An `AbortSignal` or socket close affects only that reader. It MUST NOT be
 translated into this endpoint.
@@ -930,7 +966,9 @@ Redis unavailability during `Open` produces the explicit degraded response
 described in section 3.3 and the inference request proceeds without durability.
 Redis unavailability after a stream opens follows these rules:
 
-1. the current complete upstream event is still delivered to attached readers;
+1. the current complete upstream event is still delivered to readers already
+   attached to the producer owner's bounded local feed, including a remote
+   reader with an already-established owner relay;
 2. the producer is never canceled solely because journaling failed;
 3. no uncommitted event receives a journal sequence;
 4. the proxy emits an unsequenced, always-visible
@@ -938,14 +976,24 @@ Redis unavailability after a stream opens follows these rules:
    possible;
 5. the degraded gauge becomes 1 and a structured error is logged with the
    stream ID;
-6. subsequent events for that connection pass through without claiming
-   resumability.
+6. subsequent events for those attached connections pass through without
+   claiming resumability.
 
 If the journal later recovers, the proxy MUST NOT resume sequence allocation
 after an unjournaled gap. That stream remains degraded until terminal transport
-completion. Resume requests can replay only the committed prefix and then
-return `410 stream_offset_expired` rather than present an incomplete result as
-complete.
+completion. A resume cursor at the committed boundary is rejected before
+streaming with HTTP `410 stream_offset_expired`. When an earlier cursor permits
+some committed entries to be replayed, the response has already begun with
+HTTP 200 and its status cannot later change; after the committed prefix the
+proxy therefore emits an unsequenced `streamweld.stream.error` carrying code
+`stream_offset_expired` and closes. Clients MUST treat both representations as
+the same terminal offset-expired outcome and MUST NOT present the prefix as a
+complete result.
+
+The unsequenced suffix and terminal outcome cannot be replayed after Redis
+recovers. A new remote reader cannot discover the owner while Redis is
+unavailable, and owner process loss destroys any suffix not committed to
+Redis. These are explicit degraded-mode limits, not durable-delivery claims.
 
 ## 16. Configuration resolution
 
@@ -968,7 +1016,10 @@ The principal defaults are:
 | Configuration key | Default |
 |---|---:|
 | `journal.ttl` | 10m |
+| `journal.backend` | `memory` (single replica) |
 | `journal.max_bytes_per_stream` | 4MiB |
+| `reader.max_lag_bytes` | 1MiB |
+| `reader.write_timeout` | 30s |
 | `policy.max_migrations` | 3 |
 | `policy.max_migration_tokens` | 8192 |
 | `policy.max_stream_duration` | 15m |
@@ -980,8 +1031,12 @@ The principal defaults are:
 | `policy.template_mode` | `strict` |
 | `migration.stall_timeout` | 30s, detector disabled |
 | `backend.quarantine_window` | 5s |
+| `relay.advertise_url` | unset (relay disabled) |
+| `relay.heartbeat_interval` | 2s |
+| `relay.presence_ttl` | 10s |
 
-`journal.max_total_bytes` and `reader.max_lag_bytes` MUST be positive. The
+`journal.max_total_bytes`, `reader.max_lag_bytes`, and
+`reader.write_timeout` MUST be positive. The
 standalone proxy defaults them to `256MiB` and `1MiB`; deployment manifests
 render both values explicitly.
 
@@ -1010,6 +1065,8 @@ An implementation conforms to this protocol only if automated tests demonstrate:
 - Redis loss before open and during append degrading without dropping the
   inference request;
 - cross-replica replay with Redis and rejection of multi-replica memory mode;
+- an already-established owner relay carrying the degraded suffix to a remote
+  reader, with mutual-TLS and metadata/header privacy gates;
 - drain exclusion, proactive migration, timeout, and idempotency.
 
 These tests use deterministic expected output. Performance or resilience claims

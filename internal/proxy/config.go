@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/streamweld/streamweld/internal/journal"
 )
 
 const (
@@ -28,6 +30,7 @@ const (
 	defaultJournalStreamBytes    = 4 << 20
 	defaultJournalTotalBytes     = 256 << 20
 	defaultReaderLagBytes        = 1 << 20
+	defaultReaderWriteTimeout    = 30 * time.Second
 	defaultOrphanTimeout         = 60 * time.Second
 	defaultBackendHealthInterval = 5 * time.Second
 	defaultBackendQuarantine     = 5 * time.Second
@@ -37,6 +40,20 @@ const (
 	defaultSeamWindowBytes       = 64
 	defaultStallTimeout          = 30 * time.Second
 	defaultMaxSSEEventBytes      = 1 << 20
+	defaultRedisKeyPrefix        = "streamweld"
+	defaultRelayListenAddress    = "127.0.0.1:8081"
+	defaultRelayHeartbeat        = 2 * time.Second
+	defaultRelayPresenceTTL      = 10 * time.Second
+)
+
+// JournalBackend selects the persistence implementation used by the proxy.
+type JournalBackend string
+
+const (
+	// JournalBackendMemory is bounded, in-process, and single-replica only.
+	JournalBackendMemory JournalBackend = "memory"
+	// JournalBackendRedis uses Redis Streams for cross-replica durability.
+	JournalBackendRedis JournalBackend = "redis"
 )
 
 // OrphanPolicy controls what happens to a producer after its final reader
@@ -70,9 +87,22 @@ type Config struct {
 	MaxHeaderBytes                int
 	MaxRequestBytes               int64
 	JournalTTL                    time.Duration
+	JournalBackend                JournalBackend
 	JournalMaxBytesPerStream      int64
 	JournalMaxTotalBytes          int64
 	ReaderMaxLagBytes             int64
+	ReaderWriteTimeout            time.Duration
+	RedisURL                      string
+	RedisKeyPrefix                string
+	ReplicaID                     string
+	RelayListenAddress            string
+	RelayAdvertiseURL             string
+	RelayCAFile                   string
+	RelayCertificateFile          string
+	RelayPrivateKeyFile           string
+	RelayInsecureDevMode          bool
+	RelayHeartbeatInterval        time.Duration
+	RelayPresenceTTL              time.Duration
 	OrphanPolicy                  OrphanPolicy
 	OrphanTimeout                 time.Duration
 	BackendHealthInterval         time.Duration
@@ -104,9 +134,15 @@ func DefaultConfig() Config {
 		MaxHeaderBytes:                defaultMaxHeaderBytes,
 		MaxRequestBytes:               defaultMaxRequestBytes,
 		JournalTTL:                    defaultJournalTTL,
+		JournalBackend:                JournalBackendMemory,
 		JournalMaxBytesPerStream:      defaultJournalStreamBytes,
 		JournalMaxTotalBytes:          defaultJournalTotalBytes,
 		ReaderMaxLagBytes:             defaultReaderLagBytes,
+		ReaderWriteTimeout:            defaultReaderWriteTimeout,
+		RedisKeyPrefix:                defaultRedisKeyPrefix,
+		RelayListenAddress:            defaultRelayListenAddress,
+		RelayHeartbeatInterval:        defaultRelayHeartbeat,
+		RelayPresenceTTL:              defaultRelayPresenceTTL,
 		OrphanPolicy:                  OrphanContinue,
 		OrphanTimeout:                 defaultOrphanTimeout,
 		BackendHealthInterval:         defaultBackendHealthInterval,
@@ -135,6 +171,33 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 	if value, ok := lookup("STREAMWELD_LISTEN"); ok {
 		cfg.ListenAddress = value
 	}
+	if value, ok := lookup("STREAMWELD_JOURNAL_BACKEND"); ok {
+		cfg.JournalBackend = JournalBackend(value)
+	}
+	if value, ok := lookup("STREAMWELD_REDIS_URL"); ok {
+		cfg.RedisURL = value
+	}
+	if value, ok := lookup("STREAMWELD_REDIS_KEY_PREFIX"); ok {
+		cfg.RedisKeyPrefix = value
+	}
+	if value, ok := lookup("STREAMWELD_REPLICA_ID"); ok {
+		cfg.ReplicaID = value
+	}
+	if value, ok := lookup("STREAMWELD_RELAY_LISTEN"); ok {
+		cfg.RelayListenAddress = value
+	}
+	if value, ok := lookup("STREAMWELD_RELAY_ADVERTISE_URL"); ok {
+		cfg.RelayAdvertiseURL = value
+	}
+	if value, ok := lookup("STREAMWELD_RELAY_CA_FILE"); ok {
+		cfg.RelayCAFile = value
+	}
+	if value, ok := lookup("STREAMWELD_RELAY_CERT_FILE"); ok {
+		cfg.RelayCertificateFile = value
+	}
+	if value, ok := lookup("STREAMWELD_RELAY_KEY_FILE"); ok {
+		cfg.RelayPrivateKeyFile = value
+	}
 
 	durations := []struct {
 		name string
@@ -149,11 +212,14 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 		{"STREAMWELD_RESPONSE_HEADER_TIMEOUT", &cfg.ResponseHeaderTimeout},
 		{"STREAMWELD_UPSTREAM_IDLE_CONNECTION_TIMEOUT", &cfg.UpstreamIdleConnectionTimeout},
 		{"STREAMWELD_JOURNAL_TTL", &cfg.JournalTTL},
+		{"STREAMWELD_READER_WRITE_TIMEOUT", &cfg.ReaderWriteTimeout},
 		{"STREAMWELD_ORPHAN_TIMEOUT", &cfg.OrphanTimeout},
 		{"STREAMWELD_BACKEND_HEALTH_INTERVAL", &cfg.BackendHealthInterval},
 		{"STREAMWELD_BACKEND_QUARANTINE_WINDOW", &cfg.BackendQuarantineWindow},
 		{"STREAMWELD_MAX_STREAM_DURATION", &cfg.MaxStreamDuration},
 		{"STREAMWELD_STALL_TIMEOUT", &cfg.StallTimeout},
+		{"STREAMWELD_RELAY_HEARTBEAT_INTERVAL", &cfg.RelayHeartbeatInterval},
+		{"STREAMWELD_RELAY_PRESENCE_TTL", &cfg.RelayPresenceTTL},
 	}
 	for _, item := range durations {
 		value, ok := lookup(item.name)
@@ -233,6 +299,7 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 		{"STREAMWELD_ALLOW_CROSS_VERSION", &cfg.AllowCrossVersion},
 		{"STREAMWELD_ALLOW_STRUCTURED_RESUME", &cfg.AllowStructuredResume},
 		{"STREAMWELD_STALL_DETECTION_ENABLED", &cfg.StallDetectionEnabled},
+		{"STREAMWELD_RELAY_INSECURE_DEV_MODE", &cfg.RelayInsecureDevMode},
 	}
 	for _, item := range boolValues {
 		value, ok := lookup(item.name)
@@ -271,11 +338,14 @@ func (c Config) Validate() error {
 		{"TLS handshake timeout", c.TLSHandshakeTimeout},
 		{"upstream idle connection timeout", c.UpstreamIdleConnectionTimeout},
 		{"journal TTL", c.JournalTTL},
+		{"reader write timeout", c.ReaderWriteTimeout},
 		{"orphan timeout", c.OrphanTimeout},
 		{"backend health interval", c.BackendHealthInterval},
 		{"backend quarantine window", c.BackendQuarantineWindow},
 		{"max stream duration", c.MaxStreamDuration},
 		{"stall timeout", c.StallTimeout},
+		{"relay heartbeat interval", c.RelayHeartbeatInterval},
+		{"relay presence TTL", c.RelayPresenceTTL},
 	}
 	for _, item := range positiveDurations {
 		if item.value <= 0 {
@@ -284,6 +354,22 @@ func (c Config) Validate() error {
 	}
 	if c.ResponseHeaderTimeout < 0 {
 		problems = append(problems, errors.New("response header timeout cannot be negative"))
+	}
+	if !c.JournalBackend.valid() {
+		problems = append(problems, fmt.Errorf("journal backend must be memory or redis, got %q", c.JournalBackend))
+	}
+	if c.JournalBackend == JournalBackendRedis {
+		if err := validateRedisURL(c.RedisURL); err != nil {
+			problems = append(problems, fmt.Errorf("redis URL: %w", err))
+		}
+	}
+	if strings.TrimSpace(c.RedisKeyPrefix) == "" {
+		problems = append(problems, errors.New("redis key prefix cannot be blank"))
+	} else if strings.ContainsAny(c.RedisKeyPrefix, "{}\r\n\x00") {
+		problems = append(problems, errors.New("redis key prefix cannot contain braces, line breaks, or NUL"))
+	}
+	if err := c.validateRelay(); err != nil {
+		problems = append(problems, err)
 	}
 	if c.MaxHeaderBytes <= 0 {
 		problems = append(problems, errors.New("max header bytes must be positive"))
@@ -324,8 +410,103 @@ func (c Config) Validate() error {
 	return errors.Join(problems...)
 }
 
+func (c Config) validateRelay() error {
+	if strings.TrimSpace(c.RelayListenAddress) == "" {
+		return errors.New("relay listen address is required")
+	}
+	if _, _, err := net.SplitHostPort(c.RelayListenAddress); err != nil {
+		return fmt.Errorf("relay listen address: %w", err)
+	}
+	if c.RelayPresenceTTL <= 2*c.RelayHeartbeatInterval {
+		return errors.New("relay presence TTL must exceed twice the heartbeat interval")
+	}
+	if c.RelayAdvertiseURL == "" {
+		if c.RelayInsecureDevMode {
+			return errors.New("relay insecure development mode requires an advertise URL")
+		}
+		return nil
+	}
+	if c.JournalBackend != JournalBackendRedis {
+		return errors.New("owner relay requires the Redis journal backend")
+	}
+	replicaID := c.ReplicaID
+	if replicaID == "" {
+		replicaID = "generated-at-startup"
+	}
+	owner := journal.OwnerRecord{ReplicaID: replicaID, RelayURL: c.RelayAdvertiseURL}
+	if err := owner.Validate(); err != nil {
+		return fmt.Errorf("owner relay: %w", err)
+	}
+	advertise, _ := url.Parse(c.RelayAdvertiseURL)
+	listenHost, _, _ := net.SplitHostPort(c.RelayListenAddress)
+	if c.RelayInsecureDevMode {
+		if advertise.Scheme != "http" {
+			return errors.New("insecure development relay advertise URL must use http")
+		}
+		if !isLoopbackRelayHost(advertise.Hostname()) || !isLoopbackRelayHost(listenHost) {
+			return errors.New("insecure development relay must listen and advertise on loopback")
+		}
+		return nil
+	}
+	if advertise.Scheme != "https" {
+		return errors.New("production relay advertise URL must use https")
+	}
+	missing := make([]string, 0, 3)
+	for name, value := range map[string]string{
+		"CA file": c.RelayCAFile, "certificate file": c.RelayCertificateFile, "private key file": c.RelayPrivateKeyFile,
+	} {
+		if strings.TrimSpace(value) == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) != 0 {
+		slices.Sort(missing)
+		return fmt.Errorf("production relay requires %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func isLoopbackRelayHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (policy OrphanPolicy) valid() bool {
 	return policy == OrphanContinue || policy == OrphanCancelAfter || policy == OrphanCancel
+}
+
+func (backend JournalBackend) valid() bool {
+	return backend == JournalBackendMemory || backend == JournalBackendRedis
+}
+
+func validateRedisURL(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return errors.New("is required when journal backend is redis")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		// url.Parse errors can echo the original URL, including credentials.
+		return errors.New("is malformed")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "redis", "rediss":
+		if parsed.Hostname() == "" {
+			return errors.New("must include a host")
+		}
+	case "unix":
+		if parsed.Path == "" {
+			return errors.New("unix URL must include a socket path")
+		}
+	default:
+		return fmt.Errorf("scheme must be redis, rediss, or unix, got %q", parsed.Scheme)
+	}
+	if parsed.Fragment != "" {
+		return errors.New("must not contain a fragment")
+	}
+	return nil
 }
 
 func parseBackendURL(raw string) (*url.URL, error) {

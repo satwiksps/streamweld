@@ -17,6 +17,10 @@ var (
 	// ErrInvalidIdempotencyTTL indicates that a mapping lifetime was not
 	// positive.
 	ErrInvalidIdempotencyTTL = errors.New("journal: invalid idempotency TTL")
+
+	// ErrIdempotencyReservationLost means a pending key-to-stream reservation
+	// expired or was replaced before its journal was opened.
+	ErrIdempotencyReservationLost = errors.New("journal: idempotency reservation lost")
 )
 
 // IdempotencyDigest is the opaque SHA-256 identity of a client-supplied key.
@@ -53,6 +57,23 @@ type IdempotencyRegistry interface {
 	Refresh(ctx context.Context, digest IdempotencyDigest, ttl time.Duration) (bool, error)
 	Remove(ctx context.Context, digest IdempotencyDigest) (bool, error)
 	Expire(ctx context.Context) (int, error)
+}
+
+// PendingIdempotencyRegistry is an optional distributed-registry extension.
+// A newly created binding starts as a short reservation: its creator renews it
+// while opening the journal, then Journal.Open atomically promotes it. Release
+// is conditional on both digest and stream ID so a stale creator cannot delete
+// a newer winner's reservation.
+type PendingIdempotencyRegistry interface {
+	RefreshPending(ctx context.Context, digest IdempotencyDigest, id StreamID, ttl time.Duration) (bool, error)
+	ReleasePending(ctx context.Context, digest IdempotencyDigest, id StreamID) (bool, error)
+}
+
+// ConditionalIdempotencyRegistry removes stale ready bindings without racing
+// a replacement winner. Implementations must compare both digest and stream ID
+// atomically and must not remove a pending reservation.
+type ConditionalIdempotencyRegistry interface {
+	RemoveIfBound(ctx context.Context, digest IdempotencyDigest, id StreamID) (bool, error)
 }
 
 type idempotencyEntry struct {
@@ -174,6 +195,33 @@ func (r *MemoryIdempotencyRegistry) Remove(ctx context.Context, digest Idempoten
 	return true, nil
 }
 
+// RemoveIfBound atomically removes digest only when it still names id.
+func (r *MemoryIdempotencyRegistry) RemoveIfBound(
+	ctx context.Context,
+	digest IdempotencyDigest,
+	id StreamID,
+) (bool, error) {
+	if err := checkIdempotencyContext(ctx); err != nil {
+		return false, err
+	}
+	if err := id.Validate(); err != nil {
+		return false, fmt.Errorf("conditionally remove idempotency key: %w", err)
+	}
+	if err := r.acquire(ctx); err != nil {
+		return false, err
+	}
+	defer r.release()
+	if err := checkIdempotencyContext(ctx); err != nil {
+		return false, err
+	}
+	entry, ok := r.entries[digest]
+	if !ok || entry.id != id {
+		return false, nil
+	}
+	delete(r.entries, digest)
+	return true, nil
+}
+
 // Expire removes mappings whose lifetime has elapsed and returns their count.
 func (r *MemoryIdempotencyRegistry) Expire(ctx context.Context) (int, error) {
 	if err := checkIdempotencyContext(ctx); err != nil {
@@ -254,3 +302,4 @@ func checkIdempotencyContext(ctx context.Context) error {
 }
 
 var _ IdempotencyRegistry = (*MemoryIdempotencyRegistry)(nil)
+var _ ConditionalIdempotencyRegistry = (*MemoryIdempotencyRegistry)(nil)

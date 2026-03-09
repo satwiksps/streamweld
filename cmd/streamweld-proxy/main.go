@@ -30,7 +30,10 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	logLevel := envOrDefault(lookup, "STREAMWELD_LOG_LEVEL", "info")
 	flags := flag.NewFlagSet("streamweld-proxy", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.StringVar(&config.BackendURL, "backend", config.BackendURL, "absolute URL of the OpenAI-compatible backend (or STREAMWELD_BACKEND)")
+	flags.Func("backend", "absolute URL of the OpenAI-compatible backend (or STREAMWELD_BACKEND; omitted from help defaults)", func(value string) error {
+		config.BackendURL = value
+		return nil
+	})
 	flags.StringVar(&config.ListenAddress, "listen", config.ListenAddress, "TCP address to listen on")
 	flags.DurationVar(&config.ReadHeaderTimeout, "read-header-timeout", config.ReadHeaderTimeout, "maximum time to read incoming request headers")
 	flags.DurationVar(&config.IdleTimeout, "idle-timeout", config.IdleTimeout, "incoming keep-alive idle timeout")
@@ -42,10 +45,29 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	flags.DurationVar(&config.UpstreamIdleConnectionTimeout, "upstream-idle-connection-timeout", config.UpstreamIdleConnectionTimeout, "upstream keep-alive idle timeout")
 	flags.IntVar(&config.MaxHeaderBytes, "max-header-bytes", config.MaxHeaderBytes, "maximum incoming request-header size")
 	flags.Int64Var(&config.MaxRequestBytes, "max-request-bytes", config.MaxRequestBytes, "maximum completion request-body size")
+	flags.Var((*stringValue)(&config.JournalBackend), "journal-backend", "journal persistence backend: memory or redis")
 	flags.DurationVar(&config.JournalTTL, "journal-ttl", config.JournalTTL, "retention time for terminal stream journals")
 	flags.Int64Var(&config.JournalMaxBytesPerStream, "journal-max-bytes-per-stream", config.JournalMaxBytesPerStream, "memory journal byte cap per stream")
 	flags.Int64Var(&config.JournalMaxTotalBytes, "journal-max-total-bytes", config.JournalMaxTotalBytes, "memory journal global byte cap")
 	flags.Int64Var(&config.ReaderMaxLagBytes, "reader-max-lag-bytes", config.ReaderMaxLagBytes, "maximum queued bytes for one stream reader")
+	flags.DurationVar(&config.ReaderWriteTimeout, "reader-write-timeout", config.ReaderWriteTimeout, "maximum time for each downstream stream write or flush")
+	flags.Func("redis-url", "Redis connection URL (or STREAMWELD_REDIS_URL; omitted from help defaults)", func(value string) error {
+		config.RedisURL = value
+		return nil
+	})
+	flags.StringVar(&config.RedisKeyPrefix, "redis-key-prefix", config.RedisKeyPrefix, "namespace prefix for Redis journal keys")
+	flags.StringVar(&config.ReplicaID, "replica-id", config.ReplicaID, "unique relay identity; generated when omitted")
+	flags.StringVar(&config.RelayListenAddress, "relay-listen", config.RelayListenAddress, "private owner-relay TCP listen address")
+	flags.Func("relay-advertise-url", "private owner-relay base URL (or STREAMWELD_RELAY_ADVERTISE_URL; empty disables relay)", func(value string) error {
+		config.RelayAdvertiseURL = value
+		return nil
+	})
+	flags.StringVar(&config.RelayCAFile, "relay-ca-file", config.RelayCAFile, "PEM CA used to verify relay peers")
+	flags.StringVar(&config.RelayCertificateFile, "relay-cert-file", config.RelayCertificateFile, "PEM certificate used for relay mutual TLS")
+	flags.StringVar(&config.RelayPrivateKeyFile, "relay-key-file", config.RelayPrivateKeyFile, "PEM private key used for relay mutual TLS")
+	flags.BoolVar(&config.RelayInsecureDevMode, "relay-insecure-dev-mode", config.RelayInsecureDevMode, "allow plaintext relay on loopback for development and tests")
+	flags.DurationVar(&config.RelayHeartbeatInterval, "relay-heartbeat-interval", config.RelayHeartbeatInterval, "interval between relay owner-presence heartbeats")
+	flags.DurationVar(&config.RelayPresenceTTL, "relay-presence-ttl", config.RelayPresenceTTL, "lifetime of a relay owner-presence lease")
 	flags.Var(orphanPolicyValue{value: &config.OrphanPolicy}, "orphan-policy", "producer policy after the final reader disconnects: continue, cancel_after, or cancel")
 	flags.DurationVar(&config.OrphanTimeout, "orphan-timeout", config.OrphanTimeout, "reattachment grace period for cancel_after")
 	flags.DurationVar(&config.BackendHealthInterval, "backend-health-interval", config.BackendHealthInterval, "interval between active backend health probes")

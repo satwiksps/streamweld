@@ -55,6 +55,33 @@ func TestRunHelp(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Usage: streamweld-proxy --backend URL") {
 		t.Errorf("help output = %q", stderr.String())
 	}
+	for _, flagName := range []string{
+		"-journal-backend", "-redis-url", "-redis-key-prefix", "-replica-id",
+		"-relay-listen", "-relay-advertise-url", "-relay-ca-file",
+		"-relay-cert-file", "-relay-key-file", "-relay-insecure-dev-mode",
+		"-reader-write-timeout",
+	} {
+		if !strings.Contains(stderr.String(), flagName) {
+			t.Errorf("help output does not contain %q: %q", flagName, stderr.String())
+		}
+	}
+}
+
+func TestRunHelpDoesNotExposeConfiguredCredentials(t *testing.T) {
+	t.Parallel()
+	const secret = "very-private-password"
+	var stderr bytes.Buffer
+	code := run([]string{"--help"}, mapEnvironment(map[string]string{
+		"STREAMWELD_BACKEND":             "http://user:" + secret + "@backend.example.test",
+		"STREAMWELD_REDIS_URL":           "redis://user:" + secret + "@redis.example.test:6379/0",
+		"STREAMWELD_RELAY_ADVERTISE_URL": "https://user:" + secret + "@relay.example.test:8443",
+	}), &bytes.Buffer{}, &stderr)
+	if code != 0 {
+		t.Fatalf("run(--help) code = %d, want 0", code)
+	}
+	if strings.Contains(stderr.String(), secret) {
+		t.Fatalf("help output exposed configured credentials: %q", stderr.String())
+	}
 }
 
 func TestParseLogLevel(t *testing.T) {

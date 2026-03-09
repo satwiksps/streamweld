@@ -64,6 +64,7 @@ type memoryStream struct {
 	usage      Usage
 	migrations []Migration
 	terminal   *TerminalState
+	degraded   bool
 
 	tails      map[uint64]*tailReader
 	nextTailID uint64
@@ -106,6 +107,7 @@ type usagePayload struct {
 }
 
 var _ Journal = (*Memory)(nil)
+var _ DegradationMarker = (*Memory)(nil)
 
 // NewMemory validates config and returns an empty memory journal.
 func NewMemory(config Config) (*Memory, error) {
@@ -248,6 +250,9 @@ func (m *Memory) Append(ctx context.Context, id StreamID, entry Entry) (uint64, 
 	if stream.status != StatusOpen {
 		return 0, terminalError(stream)
 	}
+	if stream.degraded {
+		return 0, fmt.Errorf("%w: %s", ErrDegraded, id)
+	}
 	if stream.lastSeq == math.MaxUint64 {
 		return 0, fmt.Errorf("%w: sequence exhausted", ErrCapacity)
 	}
@@ -290,6 +295,11 @@ func (m *Memory) Read(ctx context.Context, id StreamID, fromSeq uint64) (iter.Se
 	}
 	m.touchTerminalLocked(stream)
 	snapshot := entriesAfter(stream, fromSeq)
+	degraded := stream.degraded
+	if degraded && len(snapshot) == 0 {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: stream %s contains an unjournaled gap", ErrOffsetExpired, id)
+	}
 	m.mu.Unlock()
 
 	return func(yield func(Entry, error) bool) {
@@ -305,6 +315,9 @@ func (m *Memory) Read(ctx context.Context, id StreamID, fromSeq uint64) (iter.Se
 			if !yield(entry, nil) {
 				return
 			}
+		}
+		if degraded {
+			yield(Entry{}, fmt.Errorf("%w: stream %s contains an unjournaled gap", ErrOffsetExpired, id))
 		}
 	}, nil
 }
@@ -333,6 +346,10 @@ func (m *Memory) Tail(ctx context.Context, id StreamID, fromSeq uint64) (<-chan 
 	if err := validateCursor(stream, fromSeq); err != nil {
 		m.mu.Unlock()
 		return nil, nil, err
+	}
+	if stream.degraded && fromSeq == stream.lastSeq {
+		m.mu.Unlock()
+		return nil, nil, fmt.Errorf("%w: stream %s contains an unjournaled gap", ErrOffsetExpired, id)
 	}
 	if stream.nextTailID == math.MaxUint64 {
 		m.mu.Unlock()
@@ -403,6 +420,9 @@ func (m *Memory) Close(ctx context.Context, id StreamID, terminal Entry) error {
 	if stream.status != StatusOpen {
 		return terminalError(stream)
 	}
+	if stream.degraded {
+		return fmt.Errorf("%w: %s", ErrDegraded, id)
+	}
 	if stream.lastSeq == math.MaxUint64 {
 		return fmt.Errorf("%w: sequence exhausted", ErrCapacity)
 	}
@@ -424,6 +444,42 @@ func (m *Memory) Close(ctx context.Context, id StreamID, terminal Entry) error {
 		Payload: bytes.Clone(committed.Payload),
 	}
 	stream.lruElement = m.terminalLRU.PushFront(stream)
+	return nil
+}
+
+// MarkDegraded permanently seals sequence allocation after a post-open
+// journal gap while retaining the committed prefix for diagnostic replay.
+func (m *Memory) MarkDegraded(ctx context.Context, id StreamID) error {
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	now := m.now()
+	stream, err := m.lookupLocked(id, now)
+	if err != nil {
+		return err
+	}
+	if stream.status != StatusOpen {
+		return terminalError(stream)
+	}
+	if stream.degraded {
+		stream.updatedAt = now
+		stream.expiresAt = now.Add(m.config.TTL)
+		return nil
+	}
+	stream.degraded = true
+	stream.updatedAt = now
+	stream.expiresAt = now.Add(m.config.TTL)
+	for _, reader := range stream.tails {
+		select {
+		case reader.wake <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -611,6 +667,11 @@ func (m *Memory) runTail(ctx context.Context, reader *tailReader) {
 			m.mu.Unlock()
 			return
 		}
+		if stream.degraded {
+			m.stopTailLocked(reader, ErrOffsetExpired, false)
+			m.mu.Unlock()
+			return
+		}
 		m.mu.Unlock()
 
 		select {
@@ -707,7 +768,7 @@ func (m *Memory) cleanupExpiredLocked(now time.Time) {
 		}
 	}
 	for _, stream := range m.streams {
-		if stream.status == StatusOpen || now.Before(stream.expiresAt) {
+		if (stream.status == StatusOpen && !stream.degraded) || now.Before(stream.expiresAt) {
 			continue
 		}
 		tombstoneUntil := stream.expiresAt.Add(m.config.TTL)
@@ -818,6 +879,10 @@ func snapshotState(stream *memoryStream) StreamState {
 
 func cloneMeta(meta Meta) Meta {
 	meta.ModelVersion = cloneString(meta.ModelVersion)
+	if meta.Idempotency != nil {
+		digest := *meta.Idempotency
+		meta.Idempotency = &digest
+	}
 	meta.Request = bytes.Clone(meta.Request)
 	return meta
 }
