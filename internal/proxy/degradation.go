@@ -473,7 +473,7 @@ func (r *streamRuntime) finishDegradedLocked(
 	}
 	r.degradedFeed.close()
 	r.refreshIdempotency()
-	time.AfterFunc(r.service.config.JournalTTL, func() {
+	time.AfterFunc(r.policy.JournalTTL, func() {
 		r.service.streams.CompareAndDelete(r.id, r)
 	})
 	return nil
@@ -503,7 +503,7 @@ func (r *streamRuntime) signalJournalDegradedTerminal() {
 func (r *streamRuntime) runJournalDegradedLease() {
 	marker := r.service.journal.(journal.DegradationMarker)
 	retry := degradationMarkerRetryMin
-	refresh := r.service.config.JournalTTL / 2
+	refresh := r.policy.JournalTTL / 2
 	if refresh <= 0 {
 		refresh = time.Millisecond
 	}
@@ -549,7 +549,7 @@ func (r *streamRuntime) runJournalDegradedLease() {
 			}
 			terminal = true
 			terminalSignal = nil
-			terminalDeadline = time.Now().Add(r.service.config.JournalTTL)
+			terminalDeadline = time.Now().Add(r.policy.JournalTTL)
 		case <-r.service.rootContext.Done():
 			if !timer.Stop() {
 				select {

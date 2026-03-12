@@ -92,6 +92,7 @@ type Config struct {
 	JournalMaxTotalBytes          int64
 	ReaderMaxLagBytes             int64
 	ReaderWriteTimeout            time.Duration
+	AdminTokenFile                string
 	RedisURL                      string
 	RedisKeyPrefix                string
 	ReplicaID                     string
@@ -176,6 +177,9 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookup("STREAMWELD_REDIS_URL"); ok {
 		cfg.RedisURL = value
+	}
+	if value, ok := lookup("STREAMWELD_ADMIN_TOKEN_FILE"); ok {
+		cfg.AdminTokenFile = value
 	}
 	if value, ok := lookup("STREAMWELD_REDIS_KEY_PREFIX"); ok {
 		cfg.RedisKeyPrefix = value
@@ -367,6 +371,9 @@ func (c Config) Validate() error {
 		problems = append(problems, errors.New("redis key prefix cannot be blank"))
 	} else if strings.ContainsAny(c.RedisKeyPrefix, "{}\r\n\x00") {
 		problems = append(problems, errors.New("redis key prefix cannot contain braces, line breaks, or NUL"))
+	}
+	if strings.ContainsAny(c.AdminTokenFile, "\r\n\x00") {
+		problems = append(problems, errors.New("admin token file cannot contain line breaks or NUL"))
 	}
 	if err := c.validateRelay(); err != nil {
 		problems = append(problems, err)

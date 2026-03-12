@@ -130,7 +130,7 @@ func resolveConcurrently(service *durableService, idempotencyKey string) <-chan 
 		)
 		resolution, err := service.resolve(request, normalizedRequest{
 			Body: []byte(`{"model":"model","stream":true}`), Model: "model", Stream: true,
-		}, OrphanContinue, idempotencyKey)
+		}, service.policyForModel("model"), idempotencyKey)
 		result <- creationResolution{resolution: resolution, err: err}
 	}()
 	return result

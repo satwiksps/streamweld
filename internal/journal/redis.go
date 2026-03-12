@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -39,12 +40,13 @@ if redis.call('EXISTS', KEYS[1]) == 1 then
     if redis.call('EXISTS', KEYS[2]) == 0 then
       return redis.error_reply('STREAMWELD_OFFSET_EXPIRED')
     end
-    redis.call('PEXPIRE', KEYS[1], ARGV[9])
-    redis.call('PEXPIRE', KEYS[2], ARGV[9])
-    redis.call('SET', KEYS[3], '1', 'PX', ARGV[10])
+    local ttl = redis.call('HGET', KEYS[1], 'ttl_ms') or ARGV[9]
+    redis.call('PEXPIRE', KEYS[1], ttl)
+    redis.call('PEXPIRE', KEYS[2], ttl)
+    redis.call('SET', KEYS[3], '1', 'PX', tonumber(ttl) * 2)
     local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
     if idempotency then
-      redis.call('PEXPIRE', idempotency, ARGV[9])
+      redis.call('PEXPIRE', idempotency, ttl)
     end
     return {'1', ARGV[11]}
   end
@@ -96,6 +98,7 @@ redis.call('HSET', KEYS[1],
   'status', 'open',
   'resumable', '1',
   'degraded', '0',
+  'ttl_ms', ARGV[9],
   'open_op_nonce', ARGV[11])
 if ARGV[12] == '1' then
   redis.call('HSET', KEYS[1],
@@ -126,12 +129,13 @@ end
 if redis.call('HGET', KEYS[1], 'status') ~= 'open' then
   return redis.error_reply('STREAMWELD_TERMINAL')
 end
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
-redis.call('PEXPIRE', KEYS[2], ARGV[1])
-redis.call('SET', KEYS[3], '1', 'PX', ARGV[2])
+local ttl = redis.call('HGET', KEYS[1], 'ttl_ms') or ARGV[1]
+redis.call('PEXPIRE', KEYS[1], ttl)
+redis.call('PEXPIRE', KEYS[2], ttl)
+redis.call('SET', KEYS[3], '1', 'PX', tonumber(ttl) * 2)
 local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
 if idempotency then
-  redis.call('PEXPIRE', idempotency, ARGV[1])
+  redis.call('PEXPIRE', idempotency, ttl)
 end
 return 1
 `)
@@ -329,6 +333,13 @@ func (r *Redis) Open(ctx context.Context, id StreamID, meta Meta) error {
 	if err := id.Validate(); err != nil {
 		return fmt.Errorf("open stream: %w", err)
 	}
+	retentionTTL := meta.RetentionTTL
+	if retentionTTL == 0 {
+		retentionTTL = r.config.TTL
+	}
+	if retentionTTL < 0 || retentionTTL > time.Duration(math.MaxInt64/2) {
+		return fmt.Errorf("%w: retention TTL must be positive and safely bounded", ErrInvalidEntry)
+	}
 	ownerPresent, ownerReplicaID, ownerRelayURL := "0", "", ""
 	if meta.Owner != nil {
 		if err := meta.Owner.Validate(); err != nil {
@@ -376,8 +387,8 @@ func (r *Redis) Open(ctx context.Context, id StreamID, meta Meta) error {
 			meta.Endpoint,
 			string(meta.Request),
 			string(payload),
-			durationMillis(r.config.TTL),
-			durationMillis(2*r.config.TTL),
+			durationMillis(retentionTTL),
+			durationMillis(2*retentionTTL),
 			nonce,
 			ownerPresent,
 			ownerReplicaID,

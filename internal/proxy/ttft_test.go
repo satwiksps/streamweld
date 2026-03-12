@@ -107,7 +107,7 @@ func TestPassthroughTTFTOverheadBudget(t *testing.T) {
 		_, drainErr := io.Copy(io.Discard, response.Body)
 		closeErr := response.Body.Close()
 		if readErr != nil {
-			t.Fatalf("read first response byte: %v", readErr)
+			t.Fatalf("read first response byte for %s: %v", id, readErr)
 		}
 		if drainErr != nil {
 			t.Fatalf("drain timing response: %v", drainErr)

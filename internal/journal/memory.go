@@ -48,6 +48,7 @@ type Memory struct {
 type memoryStream struct {
 	id             StreamID
 	meta           Meta
+	retentionTTL   time.Duration
 	originBackend  string
 	currentBackend string
 
@@ -167,6 +168,13 @@ func (m *Memory) Open(ctx context.Context, id StreamID, meta Meta) error {
 	if err := id.Validate(); err != nil {
 		return fmt.Errorf("open stream: %w", err)
 	}
+	retentionTTL := meta.RetentionTTL
+	if retentionTTL == 0 {
+		retentionTTL = m.config.TTL
+	}
+	if retentionTTL < 0 || retentionTTL > time.Duration(math.MaxInt64/2) {
+		return fmt.Errorf("%w: retention TTL must be positive and safely bounded", ErrInvalidEntry)
+	}
 
 	payload, err := json.Marshal(struct {
 		StreamID     StreamID `json:"stream_id"`
@@ -209,6 +217,7 @@ func (m *Memory) Open(ctx context.Context, id StreamID, meta Meta) error {
 	stream := &memoryStream{
 		id:             id,
 		meta:           meta,
+		retentionTTL:   retentionTTL,
 		originBackend:  meta.BackendID,
 		currentBackend: meta.BackendID,
 		entries:        []storedEntry{{entry: entry, size: size}},
@@ -219,7 +228,7 @@ func (m *Memory) Open(ctx context.Context, id StreamID, meta Meta) error {
 		resumable:      true,
 		createdAt:      now,
 		updatedAt:      now,
-		expiresAt:      now.Add(m.config.TTL),
+		expiresAt:      now.Add(retentionTTL),
 		migrations:     make([]Migration, 0),
 		tails:          make(map[uint64]*tailReader),
 	}
@@ -436,7 +445,7 @@ func (m *Memory) Close(ctx context.Context, id StreamID, terminal Entry) error {
 	}
 	stream.status = statusForTerminal(committed.Kind)
 	stream.resumable = committed.Kind != KindStopped
-	stream.expiresAt = now.Add(m.config.TTL)
+	stream.expiresAt = now.Add(stream.retentionTTL)
 	stream.terminal = &TerminalState{
 		Seq:     committed.Seq,
 		TS:      committed.TS,
@@ -468,12 +477,12 @@ func (m *Memory) MarkDegraded(ctx context.Context, id StreamID) error {
 	}
 	if stream.degraded {
 		stream.updatedAt = now
-		stream.expiresAt = now.Add(m.config.TTL)
+		stream.expiresAt = now.Add(stream.retentionTTL)
 		return nil
 	}
 	stream.degraded = true
 	stream.updatedAt = now
-	stream.expiresAt = now.Add(m.config.TTL)
+	stream.expiresAt = now.Add(stream.retentionTTL)
 	for _, reader := range stream.tails {
 		select {
 		case reader.wake <- struct{}{}:
@@ -499,7 +508,7 @@ func (m *Memory) commitLocked(stream *memoryStream, entry Entry, size int64, now
 		stream.earliestSeq = entry.Seq
 	}
 	stream.updatedAt = now
-	stream.expiresAt = now.Add(m.config.TTL)
+	stream.expiresAt = now.Add(stream.retentionTTL)
 	m.applyStateEntryLocked(stream, entry)
 	m.dropReadersBehindRingLocked(stream)
 	m.publishLocked(stream, size)
@@ -541,7 +550,7 @@ func (m *Memory) makeRoomLocked(stream *memoryStream, size int64, now time.Time)
 		return 0, fmt.Errorf("%w: need %d additional bytes with only active streams remaining", ErrCapacity, needFree-freed)
 	}
 	for _, victim := range victims {
-		m.removeStreamLocked(victim, now, now.Add(m.config.TTL))
+		m.removeStreamLocked(victim, now, now.Add(victim.retentionTTL))
 	}
 	return trimCount, nil
 }
@@ -771,7 +780,7 @@ func (m *Memory) cleanupExpiredLocked(now time.Time) {
 		if (stream.status == StatusOpen && !stream.degraded) || now.Before(stream.expiresAt) {
 			continue
 		}
-		tombstoneUntil := stream.expiresAt.Add(m.config.TTL)
+		tombstoneUntil := stream.expiresAt.Add(stream.retentionTTL)
 		m.removeStreamLocked(stream, now, tombstoneUntil)
 	}
 }

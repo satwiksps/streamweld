@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,33 @@ func TestNewServerRejectsInvalidOptions(t *testing.T) {
 	}
 	if _, err := NewServer(config, nil, nil); err == nil {
 		t.Fatal("NewServer accepted a nil option")
+	}
+}
+
+func TestLoadAdminTokenIsBoundedAndNeverAcceptsMultipleFields(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	write := func(name, value string) string {
+		t.Helper()
+		path := filepath.Join(directory, name)
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	valid := write("valid", "route-admin-secret\n")
+	if token, err := loadAdminToken(valid); err != nil || token != "route-admin-secret" {
+		t.Fatalf("loadAdminToken(valid) = (%q, %v)", token, err)
+	}
+	for _, path := range []string{
+		write("empty", ""),
+		write("whitespace", "\r\n"),
+		write("multiple", "first second"),
+		write("oversize", strings.Repeat("x", 4097)),
+	} {
+		if token, err := loadAdminToken(path); err == nil || token != "" {
+			t.Errorf("loadAdminToken(%s) = (%q, %v), want empty error", filepath.Base(path), token, err)
+		}
 	}
 }
 

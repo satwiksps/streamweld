@@ -19,21 +19,24 @@ const redisReceiptReconcileTimeout = 250 * time.Millisecond
 // retry return the original result. Each receipt has a fixed value and expires
 // with the journal; the state hash therefore stays bounded.
 var redisAppendReceiptScript = redislib.NewScript(`
+local ttl = tonumber(redis.call('HGET', KEYS[1], 'ttl_ms')) or tonumber(ARGV[4])
+local tombstone_ttl = ttl * 2
+local receipt_ttl = math.min(tonumber(ARGV[7]), ttl)
 local receipt = redis.call('GET', KEYS[4])
 if receipt then
   if string.sub(receipt, 1, 7) ~= 'append:' then
     return redis.error_reply('STREAMWELD_NONCE_CONFLICT')
   end
   if redis.call('HGET', KEYS[1], 'status') == 'open' then
-    redis.call('PEXPIRE', KEYS[1], ARGV[4])
-    redis.call('PEXPIRE', KEYS[2], ARGV[4])
-    redis.call('SET', KEYS[3], '1', 'PX', ARGV[5])
+    redis.call('PEXPIRE', KEYS[1], ttl)
+    redis.call('PEXPIRE', KEYS[2], ttl)
+    redis.call('SET', KEYS[3], '1', 'PX', tombstone_ttl)
     local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
     if idempotency then
-      redis.call('PEXPIRE', idempotency, ARGV[4])
+      redis.call('PEXPIRE', idempotency, ttl)
     end
   end
-  redis.call('PEXPIRE', KEYS[4], ARGV[7])
+  redis.call('PEXPIRE', KEYS[4], receipt_ttl)
   return {string.sub(receipt, 8), ARGV[6]}
 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
@@ -56,33 +59,36 @@ redis.call('XADD', KEYS[2], tostring(seq) .. '-0', 'kind', ARGV[2], 'payload', A
 redis.call('HSET', KEYS[1],
   'last_seq', tostring(seq),
   'updated_at', ARGV[1])
-redis.call('SET', KEYS[4], 'append:' .. tostring(seq), 'PX', ARGV[7])
-redis.call('PEXPIRE', KEYS[1], ARGV[4])
-redis.call('PEXPIRE', KEYS[2], ARGV[4])
-redis.call('SET', KEYS[3], '1', 'PX', ARGV[5])
+redis.call('SET', KEYS[4], 'append:' .. tostring(seq), 'PX', receipt_ttl)
+redis.call('PEXPIRE', KEYS[1], ttl)
+redis.call('PEXPIRE', KEYS[2], ttl)
+redis.call('SET', KEYS[3], '1', 'PX', tombstone_ttl)
 local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
 if idempotency then
-  redis.call('PEXPIRE', idempotency, ARGV[4])
+  redis.call('PEXPIRE', idempotency, ttl)
 end
 return {tostring(seq), ARGV[6]}
 `)
 
 var redisCloseReceiptScript = redislib.NewScript(`
+local ttl = tonumber(redis.call('HGET', KEYS[1], 'ttl_ms')) or tonumber(ARGV[6])
+local tombstone_ttl = ttl * 2
+local receipt_ttl = math.min(tonumber(ARGV[9]), ttl)
 local receipt = redis.call('GET', KEYS[4])
 if receipt then
   if string.sub(receipt, 1, 6) ~= 'close:' then
     return redis.error_reply('STREAMWELD_NONCE_CONFLICT')
   end
   if redis.call('HGET', KEYS[1], 'status') == 'open' then
-    redis.call('PEXPIRE', KEYS[1], ARGV[6])
-    redis.call('PEXPIRE', KEYS[2], ARGV[6])
-    redis.call('SET', KEYS[3], '1', 'PX', ARGV[7])
+    redis.call('PEXPIRE', KEYS[1], ttl)
+    redis.call('PEXPIRE', KEYS[2], ttl)
+    redis.call('SET', KEYS[3], '1', 'PX', tombstone_ttl)
     local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
     if idempotency then
-      redis.call('PEXPIRE', idempotency, ARGV[6])
+      redis.call('PEXPIRE', idempotency, ttl)
     end
   end
-  redis.call('PEXPIRE', KEYS[4], ARGV[9])
+  redis.call('PEXPIRE', KEYS[4], receipt_ttl)
   return {string.sub(receipt, 7), ARGV[8]}
 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
@@ -107,33 +113,36 @@ redis.call('HSET', KEYS[1],
   'updated_at', ARGV[1],
   'status', ARGV[4],
   'resumable', ARGV[5])
-redis.call('SET', KEYS[4], 'close:' .. tostring(seq), 'PX', ARGV[9])
-redis.call('PEXPIRE', KEYS[1], ARGV[6])
-redis.call('PEXPIRE', KEYS[2], ARGV[6])
-redis.call('SET', KEYS[3], '1', 'PX', ARGV[7])
+redis.call('SET', KEYS[4], 'close:' .. tostring(seq), 'PX', receipt_ttl)
+redis.call('PEXPIRE', KEYS[1], ttl)
+redis.call('PEXPIRE', KEYS[2], ttl)
+redis.call('SET', KEYS[3], '1', 'PX', tombstone_ttl)
 local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
 if idempotency then
-  redis.call('PEXPIRE', idempotency, ARGV[6])
+  redis.call('PEXPIRE', idempotency, ttl)
 end
 return {tostring(seq), ARGV[8]}
 `)
 
 var redisDegradeReceiptScript = redislib.NewScript(`
+local ttl = tonumber(redis.call('HGET', KEYS[1], 'ttl_ms')) or tonumber(ARGV[2])
+local tombstone_ttl = ttl * 2
+local receipt_ttl = math.min(tonumber(ARGV[5]), ttl)
 local receipt = redis.call('GET', KEYS[4])
 if receipt then
   if string.sub(receipt, 1, 8) ~= 'degrade:' then
     return redis.error_reply('STREAMWELD_NONCE_CONFLICT')
   end
   if redis.call('HGET', KEYS[1], 'status') == 'open' then
-    redis.call('PEXPIRE', KEYS[1], ARGV[2])
-    redis.call('PEXPIRE', KEYS[2], ARGV[2])
-    redis.call('SET', KEYS[3], '1', 'PX', ARGV[3])
+    redis.call('PEXPIRE', KEYS[1], ttl)
+    redis.call('PEXPIRE', KEYS[2], ttl)
+    redis.call('SET', KEYS[3], '1', 'PX', tombstone_ttl)
     local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
     if idempotency then
-      redis.call('PEXPIRE', idempotency, ARGV[2])
+      redis.call('PEXPIRE', idempotency, ttl)
     end
   end
-  redis.call('PEXPIRE', KEYS[4], ARGV[5])
+  redis.call('PEXPIRE', KEYS[4], receipt_ttl)
   return {string.sub(receipt, 9), ARGV[4]}
 end
 if redis.call('EXISTS', KEYS[1]) == 0 then
@@ -153,13 +162,13 @@ if redis.call('HGET', KEYS[1], 'degraded') ~= '1' then
   redis.call('HSET', KEYS[1], 'degraded', '1', 'updated_at', ARGV[1])
   changed = 1
 end
-redis.call('SET', KEYS[4], 'degrade:' .. tostring(changed), 'PX', ARGV[5])
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
-redis.call('PEXPIRE', KEYS[2], ARGV[2])
-redis.call('SET', KEYS[3], '1', 'PX', ARGV[3])
+redis.call('SET', KEYS[4], 'degrade:' .. tostring(changed), 'PX', receipt_ttl)
+redis.call('PEXPIRE', KEYS[1], ttl)
+redis.call('PEXPIRE', KEYS[2], ttl)
+redis.call('SET', KEYS[3], '1', 'PX', tombstone_ttl)
 local idempotency = redis.call('HGET', KEYS[1], 'idempotency_key')
 if idempotency then
-  redis.call('PEXPIRE', idempotency, ARGV[2])
+  redis.call('PEXPIRE', idempotency, ttl)
 end
 return {tostring(changed), ARGV[4]}
 `)

@@ -1,0 +1,151 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: durabilitypolicies.streamweld.io
+spec:
+  group: streamweld.io
+  names:
+    kind: DurabilityPolicy
+    listKind: DurabilityPolicyList
+    plural: durabilitypolicies
+    shortNames:
+      - dp
+    singular: durabilitypolicy
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns:
+        - jsonPath: .spec.orphanPolicy
+          name: Orphan
+          type: string
+        - jsonPath: .spec.maxMigrations
+          name: Max Migrations
+          type: integer
+        - jsonPath: .spec.journalTTL
+          name: Journal TTL
+          type: string
+        - jsonPath: .metadata.creationTimestamp
+          name: Age
+          type: date
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: DurabilityPolicy defines migration, orphan, resume, and journal-retention behavior.
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              properties:
+                allowCrossVersion:
+                  default: false
+                  description: Permit continuation onto a different model version.
+                  type: boolean
+                allowStructuredResume:
+                  default: false
+                  description: Permit validated JSON-prefix continuation.
+                  type: boolean
+                journalTTL:
+                  default: 10m
+                  description: Positive terminal journal and idempotency retention period.
+                  type: string
+                  x-kubernetes-validations:
+                    - message: journalTTL must be a positive duration
+                      rule: duration(self) > duration('0s')
+                maxMigrationTokens:
+                  default: 8192
+                  description: Emitted-token eligibility ceiling; zero disables migration.
+                  format: int64
+                  minimum: 0
+                  type: integer
+                maxMigrations:
+                  default: 3
+                  description: Continuation-attempt limit; zero disables migration.
+                  format: int32
+                  minimum: 0
+                  type: integer
+                maxStreamDuration:
+                  default: 15m
+                  description: Positive elapsed-time eligibility ceiling.
+                  type: string
+                  x-kubernetes-validations:
+                    - message: maxStreamDuration must be a positive duration
+                      rule: duration(self) > duration('0s')
+                orphanPolicy:
+                  default: continue
+                  description: Generation behavior after the final reader detaches.
+                  enum:
+                    - continue
+                    - cancel_after
+                    - cancel
+                  type: string
+                orphanTimeout:
+                  default: 60s
+                  description: Positive reattachment grace period for cancel_after.
+                  type: string
+                  x-kubernetes-validations:
+                    - message: orphanTimeout must be a positive duration
+                      rule: duration(self) > duration('0s')
+                seamWindowBytes:
+                  default: 64
+                  description: Leading continuation bytes retained for seam reconciliation.
+                  format: int32
+                  minimum: 1
+                  type: integer
+            status:
+              type: object
+              properties:
+                conditions:
+                  description: Includes Ready and Degraded policy reconciliation state.
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    properties:
+                      lastTransitionTime:
+                        format: date-time
+                        type: string
+                      message:
+                        maxLength: 32768
+                        type: string
+                      observedGeneration:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      reason:
+                        maxLength: 1024
+                        minLength: 1
+                        pattern: '^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$'
+                        type: string
+                      status:
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        maxLength: 316
+                        pattern: '^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$'
+                        type: string
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
+                observedGeneration:
+                  format: int64
+                  minimum: 0
+                  type: integer
+      served: true
+      storage: true
+      subresources:
+        status: {}

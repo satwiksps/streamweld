@@ -168,6 +168,60 @@ func TestReplaceIsAtomicAndPreservesRuntimeState(t *testing.T) {
 	}
 }
 
+func TestAcquireModelFiltersDynamicRoutesAndKeepsStaticWildcard(t *testing.T) {
+	t.Parallel()
+	clock := &testClock{now: time.Unix(1, 0)}
+	llama := testBackend(t, "llama/pod-a", "http://llama:8000")
+	llama.Model = "llama-8b"
+	llama.PodNamespace = "models"
+	llama.PodName = "llama-a"
+	mistral := testBackend(t, "mistral/pod-a", "http://mistral:8000")
+	mistral.Model = "mistral-7b"
+	wildcard := testBackend(t, "standalone", "http://standalone:8000")
+	pool := testPool(t, clock, llama, mistral, wildcard)
+	markHealthy(t, pool, llama.ID, mistral.ID, wildcard.ID)
+
+	config := pool.config.Choose
+	pool.config.Choose = func(candidates []State) int {
+		for index, candidate := range candidates {
+			if candidate.ID == llama.ID {
+				return index
+			}
+		}
+		return 0
+	}
+	lease, err := pool.AcquireModel("stream-a", "llama-8b")
+	if err != nil {
+		t.Fatalf("AcquireModel(llama-8b) error: %v", err)
+	}
+	if got := lease.Backend(); got.ID != llama.ID || got.Model != "llama-8b" ||
+		got.PodNamespace != "models" || got.PodName != "llama-a" {
+		t.Fatalf("AcquireModel(llama-8b) backend = %+v", got)
+	}
+	lease.Release()
+
+	pool.config.Choose = func(candidates []State) int {
+		for index, candidate := range candidates {
+			if candidate.ID == wildcard.ID {
+				return index
+			}
+		}
+		return 0
+	}
+	lease, err = pool.AcquireModel("stream-b", "unknown-model")
+	if err != nil || lease.Backend().ID != wildcard.ID {
+		t.Fatalf("AcquireModel(unknown) = (%+v, %v), want wildcard", lease, err)
+	}
+	lease.Release()
+	pool.config.Choose = config
+
+	lease, err = pool.AcquireModel("stream-c", "")
+	if err != nil || lease.Backend().ID != wildcard.ID {
+		t.Fatalf("AcquireModel(empty) = (%+v, %v), want standalone wildcard", lease, err)
+	}
+	lease.Release()
+}
+
 func TestSelectionExclusionsDrainAndQuarantineBoundary(t *testing.T) {
 	clock := &testClock{now: time.Unix(1, 0)}
 	a := testBackend(t, "a:8000", "http://a:8000")
@@ -332,6 +386,146 @@ func TestRemoveRetainsActiveLeaseUntilRelease(t *testing.T) {
 	if err != nil || removed {
 		t.Errorf("second Remove() = (%t, %v), want (false, nil)", removed, err)
 	}
+}
+
+func TestRetainedPodDrainPinsControllerRetiredLease(t *testing.T) {
+	t.Parallel()
+	clock := &testClock{now: time.Unix(1, 0)}
+	candidate := testBackend(t, "route-a/pod-a", "http://pod-a:8000")
+	candidate.PodNamespace = "models"
+	candidate.PodName = "pod-a"
+	pool := testPool(t, clock, candidate)
+	markHealthy(t, pool, candidate.ID)
+	lease, err := pool.AcquireID(candidate.ID, "stream-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.ReplaceReady(nil); err != nil {
+		lease.Release()
+		t.Fatal(err)
+	}
+	if states := pool.List(); len(states) != 0 {
+		lease.Release()
+		t.Fatalf("List() retained a retired backend: %+v", states)
+	}
+
+	drains, err := pool.BeginRetainedPodDrain("models", "pod-a")
+	if err != nil {
+		lease.Release()
+		t.Fatal(err)
+	}
+	if len(drains) != 1 {
+		lease.Release()
+		t.Fatalf("BeginRetainedPodDrain() returned %d records, want 1", len(drains))
+	}
+	drain := drains[0]
+	snapshot := drain.Snapshot()
+	if !snapshot.Backend.Draining || snapshot.Backend.InFlight != 1 ||
+		len(snapshot.Bindings) != 1 || snapshot.Bindings[0].Owner != "stream-a" {
+		lease.Release()
+		drain.Close()
+		t.Fatalf("retained drain snapshot = %+v", snapshot)
+	}
+	if _, err := pool.AcquireID(candidate.ID, "new-stream"); !errors.Is(err, ErrNotFound) {
+		lease.Release()
+		drain.Close()
+		t.Fatalf("AcquireID(retired) error = %v, want ErrNotFound", err)
+	}
+
+	lease.Release()
+	state, err := drain.Wait(context.Background())
+	if err != nil || state.InFlight != 0 {
+		drain.Close()
+		t.Fatalf("retained drain Wait() = (%+v, %v)", state, err)
+	}
+	if states := pool.ListRetained(); len(states) != 1 {
+		drain.Close()
+		t.Fatalf("retained record was pruned before Close: %+v", states)
+	}
+	drain.Close()
+	drain.Close()
+	if states := pool.ListRetained(); len(states) != 0 {
+		t.Fatalf("retired record remained after drain Close: %+v", states)
+	}
+	if _, err := drain.Wait(context.Background()); !errors.Is(err, ErrDrainClosed) {
+		t.Fatalf("Wait() after Close error = %v, want ErrDrainClosed", err)
+	}
+}
+
+func TestReplaceReadyRevivalClearsOnlyRetirementDrain(t *testing.T) {
+	t.Parallel()
+	clock := &testClock{now: time.Unix(1, 0)}
+	candidate := testBackend(t, "backend:8000", "http://backend:8000")
+
+	t.Run("retirement-only drain", func(t *testing.T) {
+		pool := testPool(t, clock, candidate)
+		markHealthy(t, pool, candidate.ID)
+		retainedLease, err := pool.AcquireID(candidate.ID, "existing")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.ReplaceReady(nil); err != nil {
+			retainedLease.Release()
+			t.Fatal(err)
+		}
+		if err := pool.ReplaceReady([]Backend{candidate}); err != nil {
+			retainedLease.Release()
+			t.Fatal(err)
+		}
+		state, err := pool.Get(candidate.ID)
+		if err != nil || state.Draining || state.InFlight != 1 {
+			retainedLease.Release()
+			t.Fatalf("revived retirement-only backend = (%+v, %v)", state, err)
+		}
+		newLease, err := pool.AcquireID(candidate.ID, "new")
+		if err != nil {
+			retainedLease.Release()
+			t.Fatalf("AcquireID(revived) error: %v", err)
+		}
+		newLease.Release()
+		retainedLease.Release()
+	})
+
+	t.Run("explicit drain", func(t *testing.T) {
+		pool := testPool(t, clock, candidate)
+		markHealthy(t, pool, candidate.ID)
+		retainedLease, err := pool.AcquireID(candidate.ID, "existing")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.MarkDraining(candidate.ID); err != nil {
+			retainedLease.Release()
+			t.Fatal(err)
+		}
+		if err := pool.ReplaceReady(nil); err != nil {
+			retainedLease.Release()
+			t.Fatal(err)
+		}
+		if err := pool.ReplaceReady([]Backend{candidate}); err != nil {
+			retainedLease.Release()
+			t.Fatal(err)
+		}
+		state, err := pool.Get(candidate.ID)
+		if err != nil || !state.Draining || state.InFlight != 1 {
+			retainedLease.Release()
+			t.Fatalf("revived explicitly drained backend = (%+v, %v)", state, err)
+		}
+		if _, err := pool.AcquireID(candidate.ID, "blocked"); !errors.Is(err, ErrNoEligibleBackend) {
+			retainedLease.Release()
+			t.Fatalf("AcquireID(explicitly drained) error = %v, want ErrNoEligibleBackend", err)
+		}
+		if _, err := pool.Undrain(candidate.ID); err != nil {
+			retainedLease.Release()
+			t.Fatal(err)
+		}
+		newLease, err := pool.AcquireID(candidate.ID, "after-undrain")
+		if err != nil {
+			retainedLease.Release()
+			t.Fatalf("AcquireID(after Undrain) error: %v", err)
+		}
+		newLease.Release()
+		retainedLease.Release()
+	})
 }
 
 func TestConcurrentAcquireReleaseUpdateAndDrain(t *testing.T) {

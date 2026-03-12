@@ -171,12 +171,15 @@ func (pool *Pool) probeOne(parent context.Context, target probeTarget) ProbeResu
 }
 
 func (pool *Pool) probeHTTP(ctx context.Context, backend Backend) error {
-	endpoint := cloneURL(backend.URL)
-	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/health"
-	endpoint.RawPath = ""
-	endpoint.RawQuery = ""
-	endpoint.ForceQuery = false
-	endpoint.Fragment = ""
+	endpoint := cloneURL(backend.HealthURL)
+	if endpoint == nil {
+		endpoint = cloneURL(backend.URL)
+		endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/health"
+		endpoint.RawPath = ""
+		endpoint.RawQuery = ""
+		endpoint.ForceQuery = false
+		endpoint.Fragment = ""
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return fmt.Errorf("construct health request: %w", err)

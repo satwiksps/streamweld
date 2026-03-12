@@ -46,6 +46,9 @@ var (
 	ErrLeaseIDExhausted = errors.New("backend: lease ID exhausted")
 	// ErrInvalidContext means a nil context was supplied.
 	ErrInvalidContext = errors.New("backend: nil context")
+	// ErrDrainClosed means a retained drain was used after it released its
+	// record pin.
+	ErrDrainClosed = errors.New("backend: retained drain is closed")
 )
 
 // ID is an operator-assigned opaque backend identity. Deployments normally use
@@ -93,8 +96,12 @@ func (health Health) Valid() bool {
 type Backend struct {
 	ID              ID                  `json:"id"`
 	URL             *url.URL            `json:"-"`
+	HealthURL       *url.URL            `json:"-"`
+	Model           string              `json:"model,omitempty"`
 	ModelVersion    string              `json:"model_version"`
 	TemplateVerdict conformance.Verdict `json:"template_verdict"`
+	PodNamespace    string              `json:"pod_namespace,omitempty"`
+	PodName         string              `json:"pod_name,omitempty"`
 }
 
 // State is an immutable point-in-time backend snapshot.

@@ -43,7 +43,7 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 	if !normalized.Stream {
 		restoreRequestBody(request, original)
 		stripStreamweldHeaders(request.Header)
-		h.proxyFromPool(writer, request)
+		h.proxyFromPool(writer, request, normalized.Model)
 		return
 	}
 
@@ -52,11 +52,13 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 		writeAPIError(writer, http.StatusBadRequest, "invalid_verbose", err.Error())
 		return
 	}
-	policy, err := h.effectiveOrphanPolicy(request.Header)
+	policy := h.durable.policyForModel(normalized.Model)
+	orphanPolicy, err := h.effectiveOrphanPolicy(request.Header, policy.OrphanPolicy)
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_orphan_policy", err.Error())
 		return
 	}
+	policy.OrphanPolicy = orphanPolicy
 	idempotencyKey, err := parseIdempotencyHeader(request.Header)
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_idempotency_key", err.Error())
@@ -678,10 +680,13 @@ func parseIdempotencyHeader(header http.Header) (string, error) {
 	return values[0], nil
 }
 
-func (h *Handler) effectiveOrphanPolicy(header http.Header) (OrphanPolicy, error) {
+func (h *Handler) effectiveOrphanPolicy(
+	header http.Header,
+	defaultPolicy OrphanPolicy,
+) (OrphanPolicy, error) {
 	values, present := headerValues(header, headerOrphanPolicy)
 	if !present {
-		return h.durable.config.OrphanPolicy, nil
+		return defaultPolicy, nil
 	}
 	if len(values) != 1 {
 		return "", errors.New("X-Streamweld-Orphan-Policy must contain one value")

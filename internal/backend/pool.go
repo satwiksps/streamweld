@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/streamweld/streamweld/internal/conformance"
 )
@@ -32,6 +33,7 @@ type record struct {
 	revision         uint64
 	health           Health
 	draining         bool
+	retirementDrain  bool
 	retired          bool
 	quarantinedUntil time.Time
 	lastProbeAt      time.Time
@@ -51,6 +53,17 @@ type Lease struct {
 	owner    string
 	backend  State
 	released atomic.Bool
+}
+
+// RetainedDrain pins one exact backend record while an administrator triggers
+// the bindings captured by Snapshot and waits for all of its leases to finish.
+// The record may already be controller-retired; retirement never makes it
+// eligible for new leases. Close must be called after Wait is no longer used.
+type RetainedDrain struct {
+	pool     *Pool
+	record   *record
+	snapshot DrainSnapshot
+	closed   atomic.Bool
 }
 
 // NewPool validates config and atomically installs the initial backend set.
@@ -86,6 +99,7 @@ func (pool *Pool) Upsert(backend Backend) (State, error) {
 		updateRecord(record, normalized)
 		if wasRetired {
 			record.revision++
+			pool.reviveLocked(record)
 		}
 		record.retired = false
 		pool.notifyLocked(record)
@@ -97,6 +111,19 @@ func (pool *Pool) Upsert(backend Backend) (State, error) {
 // Missing backends stop receiving leases immediately. A missing backend with
 // active leases remains internally retained until every lease is released.
 func (pool *Pool) Replace(backends []Backend) error {
+	return pool.replace(backends, false)
+}
+
+// ReplaceReady atomically replaces controller-supplied backends and admits
+// newly discovered, revived, or address-changed records as healthy. Existing
+// local health and quarantine observations remain authoritative. Callers must
+// use this only after their own readiness/conformance gate has admitted every
+// supplied backend.
+func (pool *Pool) ReplaceReady(backends []Backend) error {
+	return pool.replace(backends, true)
+}
+
+func (pool *Pool) replace(backends []Backend, admitNew bool) error {
 	normalized := make([]Backend, len(backends))
 	seen := make(map[ID]struct{}, len(backends))
 	for index, backend := range backends {
@@ -116,13 +143,26 @@ func (pool *Pool) Replace(backends []Backend) error {
 	for _, backend := range normalized {
 		record := pool.records[backend.ID]
 		if record == nil {
-			pool.records[backend.ID] = newRecord(backend)
+			record = newRecord(backend)
+			if admitNew {
+				record.health = HealthHealthy
+			}
+			pool.records[backend.ID] = record
 			continue
 		}
 		wasRetired := record.retired
+		urlChanged := backendAddressChanged(record.backend, backend)
 		updateRecord(record, backend)
 		if wasRetired {
 			record.revision++
+		}
+		if admitNew && (wasRetired || urlChanged) {
+			record.health = HealthHealthy
+			record.lastProbeAt = pool.now()
+			record.lastProbeError = ""
+		}
+		if wasRetired {
+			pool.reviveLocked(record)
 		}
 		record.retired = false
 		pool.notifyLocked(record)
@@ -131,8 +171,7 @@ func (pool *Pool) Replace(backends []Backend) error {
 		if _, exists := seen[id]; exists || record.retired {
 			continue
 		}
-		record.retired = true
-		record.draining = true
+		pool.retireLocked(record)
 		pool.notifyLocked(record)
 		pool.cleanupRetiredLocked(record)
 	}
@@ -151,8 +190,7 @@ func (pool *Pool) Remove(id ID) (bool, error) {
 	if record == nil || record.retired {
 		return false, nil
 	}
-	record.retired = true
-	record.draining = true
+	pool.retireLocked(record)
 	pool.notifyLocked(record)
 	pool.cleanupRetiredLocked(record)
 	return true, nil
@@ -188,10 +226,40 @@ func (pool *Pool) List() []State {
 	return states
 }
 
+// ListRetained returns every backend record still held by the pool, including
+// controller-retired records whose leases or drain waiters have not yet
+// finished. It is intended for administrative accounting; retired records are
+// never eligible for new leases.
+func (pool *Pool) ListRetained() []State {
+	now := pool.now()
+	pool.mu.Lock()
+	states := make([]State, 0, len(pool.records))
+	for _, record := range pool.records {
+		states = append(states, pool.stateLocked(record, now))
+	}
+	pool.mu.Unlock()
+	sort.Slice(states, func(left, right int) bool { return states[left].ID < states[right].ID })
+	return states
+}
+
 // Acquire selects and atomically leases a healthy, non-draining,
 // non-quarantined backend not present in excluded. Owner is an opaque stream or
 // attempt identity returned in drain snapshots.
 func (pool *Pool) Acquire(owner string, excluded ...ID) (*Lease, error) {
+	return pool.acquire(owner, nil, excluded...)
+}
+
+// AcquireModel selects a backend registered for model. Backends with an empty
+// Model are wildcard standalone entries retained for backwards-compatible
+// static proxy configuration.
+func (pool *Pool) AcquireModel(owner, model string, excluded ...ID) (*Lease, error) {
+	if err := validateBackendMetadata("model", model, true); err != nil {
+		return nil, err
+	}
+	return pool.acquire(owner, &model, excluded...)
+}
+
+func (pool *Pool) acquire(owner string, model *string, excluded ...ID) (*Lease, error) {
 	exclusions := make(map[ID]struct{}, len(excluded))
 	for _, id := range excluded {
 		if err := id.Validate(); err != nil {
@@ -204,6 +272,9 @@ func (pool *Pool) Acquire(owner string, excluded ...ID) (*Lease, error) {
 		now := pool.now()
 		pool.mu.Lock()
 		candidates := pool.candidatesLocked(exclusions, now)
+		if model != nil {
+			candidates = filterModelCandidates(candidates, *model)
+		}
 		pool.mu.Unlock()
 		if len(candidates) == 0 {
 			return nil, ErrNoEligibleBackend
@@ -223,7 +294,8 @@ func (pool *Pool) Acquire(owner string, excluded ...ID) (*Lease, error) {
 		now = pool.now()
 		pool.mu.Lock()
 		record := pool.records[chosen]
-		if record == nil || !pool.eligibleLocked(record, exclusions, now) {
+		if record == nil || !pool.eligibleLocked(record, exclusions, now) ||
+			(model != nil && !backendServesModel(record.backend, *model)) {
 			pool.mu.Unlock()
 			continue
 		}
@@ -368,6 +440,7 @@ func (pool *Pool) MarkDraining(id ID) (DrainSnapshot, error) {
 		record.draining = true
 		pool.notifyLocked(record)
 	}
+	record.retirementDrain = false
 	return DrainSnapshot{
 		Backend:  pool.stateLocked(record, now),
 		Bindings: bindingsLocked(record),
@@ -389,9 +462,121 @@ func (pool *Pool) Undrain(id ID) (State, error) {
 	}
 	if record.draining {
 		record.draining = false
+		record.retirementDrain = false
 		pool.notifyLocked(record)
 	}
 	return pool.stateLocked(record, now), nil
+}
+
+// BeginRetainedDrain explicitly drains and pins the exact record for id,
+// including a controller-retired record that still has live leases. The
+// returned snapshot and Wait method remain valid across controller replacement
+// and map cleanup until Close releases the pin.
+func (pool *Pool) BeginRetainedDrain(id ID) (*RetainedDrain, error) {
+	if err := id.Validate(); err != nil {
+		return nil, err
+	}
+	now := pool.now()
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	record := pool.records[id]
+	if record == nil {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	return pool.beginRetainedDrainLocked(record, now), nil
+}
+
+// BeginRetainedPodDrain explicitly drains and pins every current or retained
+// backend associated with one pod. Discovery, marking, and binding snapshots
+// occur under one pool lock so controller replacement cannot make a leased
+// record disappear between those steps. Results are sorted by backend ID.
+func (pool *Pool) BeginRetainedPodDrain(namespace, name string) ([]*RetainedDrain, error) {
+	if err := validateBackendMetadata("pod namespace", namespace, false); err != nil {
+		return nil, err
+	}
+	if err := validateBackendMetadata("pod name", name, false); err != nil {
+		return nil, err
+	}
+	now := pool.now()
+	pool.mu.Lock()
+	drains := make([]*RetainedDrain, 0)
+	for _, record := range pool.records {
+		if record.backend.PodNamespace == namespace && record.backend.PodName == name {
+			drains = append(drains, pool.beginRetainedDrainLocked(record, now))
+		}
+	}
+	pool.mu.Unlock()
+	sort.Slice(drains, func(left, right int) bool {
+		return drains[left].snapshot.Backend.ID < drains[right].snapshot.Backend.ID
+	})
+	return drains, nil
+}
+
+// Snapshot returns the immutable binding snapshot captured while the retained
+// drain was marked and pinned.
+func (drain *RetainedDrain) Snapshot() DrainSnapshot {
+	if drain == nil {
+		return DrainSnapshot{}
+	}
+	snapshot := drain.snapshot
+	snapshot.Backend = cloneState(snapshot.Backend)
+	snapshot.Bindings = append([]Binding(nil), snapshot.Bindings...)
+	return snapshot
+}
+
+// Wait waits for the pinned record's in-flight leases to reach zero. On
+// context expiry it returns the latest state and the context error.
+func (drain *RetainedDrain) Wait(ctx context.Context) (State, error) {
+	if ctx == nil {
+		return State{}, ErrInvalidContext
+	}
+	if drain == nil || drain.pool == nil || drain.record == nil || drain.closed.Load() {
+		return State{}, ErrDrainClosed
+	}
+	pool := drain.pool
+	record := drain.record
+	for {
+		now := pool.now()
+		pool.mu.Lock()
+		state := pool.stateLocked(record, now)
+		if !record.draining {
+			pool.mu.Unlock()
+			return state, fmt.Errorf("%w: %s", ErrNotDraining, record.backend.ID)
+		}
+		if len(record.leases) == 0 {
+			pool.mu.Unlock()
+			return state, nil
+		}
+		changed := record.changed
+		pool.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			now = pool.now()
+			pool.mu.Lock()
+			state = pool.stateLocked(record, now)
+			pool.mu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return state, err
+			}
+			return state, errors.New("backend: drain context ended")
+		case <-changed:
+		}
+	}
+}
+
+// Close releases the retained-record pin. It is concurrency-safe and
+// idempotent; a retired record is removed once its final lease and pin finish.
+func (drain *RetainedDrain) Close() {
+	if drain == nil || drain.pool == nil || drain.record == nil ||
+		!drain.closed.CompareAndSwap(false, true) {
+		return
+	}
+	pool := drain.pool
+	pool.mu.Lock()
+	drain.record.waiters--
+	pool.cleanupRetiredLocked(drain.record)
+	pool.mu.Unlock()
 }
 
 // WaitDrained waits until a previously marked backend has no in-flight leases.
@@ -466,6 +651,25 @@ func (pool *Pool) acquireLocked(record *record, owner string, now time.Time) (*L
 	return &Lease{pool: pool, record: record, id: id, owner: owner, backend: state}, nil
 }
 
+func (pool *Pool) beginRetainedDrainLocked(record *record, now time.Time) *RetainedDrain {
+	if !record.draining {
+		record.draining = true
+		pool.notifyLocked(record)
+	}
+	// A retained drain is an explicit administrative drain. If the controller
+	// revives this record before its leases finish, it must remain ineligible.
+	record.retirementDrain = false
+	record.waiters++
+	return &RetainedDrain{
+		pool:   pool,
+		record: record,
+		snapshot: DrainSnapshot{
+			Backend:  pool.stateLocked(record, now),
+			Bindings: bindingsLocked(record),
+		},
+	}
+}
+
 func (pool *Pool) candidatesLocked(excluded map[ID]struct{}, now time.Time) []State {
 	candidates := make([]State, 0, len(pool.records))
 	for _, record := range pool.records {
@@ -510,6 +714,21 @@ func (pool *Pool) cleanupRetiredLocked(record *record) {
 	}
 }
 
+func (pool *Pool) retireLocked(record *record) {
+	record.retired = true
+	if !record.draining {
+		record.draining = true
+		record.retirementDrain = true
+	}
+}
+
+func (pool *Pool) reviveLocked(record *record) {
+	if record.retirementDrain {
+		record.draining = false
+		record.retirementDrain = false
+	}
+}
+
 func (pool *Pool) now() time.Time { return pool.config.Clock().UTC() }
 
 func newRecord(backend Backend) *record {
@@ -523,7 +742,7 @@ func newRecord(backend Backend) *record {
 }
 
 func updateRecord(record *record, backend Backend) {
-	urlChanged := record.backend.URL.String() != backend.URL.String()
+	urlChanged := backendAddressChanged(record.backend, backend)
 	record.backend = backend
 	if urlChanged {
 		record.revision++
@@ -557,19 +776,83 @@ func normalizeBackend(backend Backend) (Backend, error) {
 	if clonedURL.User != nil || clonedURL.Fragment != "" {
 		return Backend{}, fmt.Errorf("%w: backend %q URL cannot contain credentials or a fragment", ErrInvalidBackend, backend.ID)
 	}
+	if backend.HealthURL != nil {
+		healthURL := cloneURL(backend.HealthURL)
+		healthURL.Scheme = strings.ToLower(healthURL.Scheme)
+		if (healthURL.Scheme != "http" && healthURL.Scheme != "https") || healthURL.Host == "" ||
+			healthURL.User != nil || healthURL.RawQuery != "" || healthURL.Fragment != "" {
+			return Backend{}, fmt.Errorf("%w: backend %q health URL must be an absolute HTTP(S) URL without credentials, query, or fragment", ErrInvalidBackend, backend.ID)
+		}
+		backend.HealthURL = healthURL
+	}
 	if backend.TemplateVerdict == "" {
 		backend.TemplateVerdict = conformance.VerdictUnknown
 	}
 	if !backend.TemplateVerdict.Valid() {
 		return Backend{}, fmt.Errorf("%w: backend %q has invalid template verdict %q", ErrInvalidBackend, backend.ID, backend.TemplateVerdict)
 	}
+	if err := validateBackendMetadata("model", backend.Model, true); err != nil {
+		return Backend{}, err
+	}
+	if (backend.PodNamespace == "") != (backend.PodName == "") {
+		return Backend{}, fmt.Errorf("%w: backend %q pod namespace and name must be set together", ErrInvalidBackend, backend.ID)
+	}
+	if err := validateBackendMetadata("pod namespace", backend.PodNamespace, true); err != nil {
+		return Backend{}, err
+	}
+	if err := validateBackendMetadata("pod name", backend.PodName, true); err != nil {
+		return Backend{}, err
+	}
 	backend.URL = clonedURL
 	return backend, nil
 }
 
+func validateBackendMetadata(field, value string, allowEmpty bool) error {
+	if value == "" {
+		if allowEmpty {
+			return nil
+		}
+		return fmt.Errorf("%w: backend %s must be non-empty", ErrInvalidBackend, field)
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%w: backend %s must be unpadded", ErrInvalidBackend, field)
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("%w: backend %s contains a control character", ErrInvalidBackend, field)
+		}
+	}
+	return nil
+}
+
+func backendServesModel(candidate Backend, model string) bool {
+	return candidate.Model == "" || candidate.Model == model
+}
+
+func filterModelCandidates(candidates []State, model string) []State {
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		if backendServesModel(candidate.Backend, model) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
 func cloneBackend(backend Backend) Backend {
 	backend.URL = cloneURL(backend.URL)
+	backend.HealthURL = cloneURL(backend.HealthURL)
 	return backend
+}
+
+func backendAddressChanged(left, right Backend) bool {
+	if left.URL.String() != right.URL.String() {
+		return true
+	}
+	if (left.HealthURL == nil) != (right.HealthURL == nil) {
+		return true
+	}
+	return left.HealthURL != nil && left.HealthURL.String() != right.HealthURL.String()
 }
 
 func cloneURL(source *url.URL) *url.URL {

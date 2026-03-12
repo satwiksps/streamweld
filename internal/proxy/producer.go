@@ -268,7 +268,7 @@ func (r *streamRuntime) runAttempt(
 		if spec.continuation {
 			frames = append(frames, bufferedAttemptFrame{event: event, observation: observation})
 			continuationText = append(continuationText, observation.TextDelta...)
-			if len(continuationText) < r.service.config.SeamWindowBytes {
+			if len(continuationText) < r.policy.SeamWindowBytes {
 				continue
 			}
 			if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
@@ -341,7 +341,7 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 		MultipleChoices:    r.multipleChoice,
 	})
 
-	targetLease, acquireErr := r.service.backends.Acquire(r.id.String(), failedBackend.ID)
+	targetLease, acquireErr := r.service.acquireBackend(r.id.String(), r.model, failedBackend.ID)
 	targetAvailable := acquireErr == nil
 	target := backend.State{
 		Backend: backend.Backend{
@@ -354,13 +354,13 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 	}
 
 	policy := migrate.Policy{
-		MaxMigrations:         uint64(r.service.config.MaxMigrations),
-		MaxMigrationTokens:    r.service.config.MaxMigrationTokens,
-		MaxStreamDuration:     r.service.config.MaxStreamDuration,
-		AllowStructuredResume: r.service.config.AllowStructuredResume,
-		AllowCrossVersion:     r.service.config.AllowCrossVersion,
-		SeamWindowBytes:       r.service.config.SeamWindowBytes,
-		TemplateMode:          r.service.config.TemplateMode,
+		MaxMigrations:         uint64(r.policy.MaxMigrations),
+		MaxMigrationTokens:    r.policy.MaxMigrationTokens,
+		MaxStreamDuration:     r.policy.MaxStreamDuration,
+		AllowStructuredResume: r.policy.AllowStructuredResume,
+		AllowCrossVersion:     r.policy.AllowCrossVersion,
+		SeamWindowBytes:       r.policy.SeamWindowBytes,
+		TemplateMode:          r.policy.TemplateMode,
 	}
 	eligibility, eligibilityErr := migrate.EvaluateEligibility(policy, migrate.EligibilitySnapshot{
 		MigrationsUsed:         migrationsUsed,
@@ -638,7 +638,7 @@ func (r *streamRuntime) flushSeam(
 	result, err := migrate.ReconcileSeam(
 		[]byte(accumulated),
 		continuation,
-		r.service.config.SeamWindowBytes,
+		r.policy.SeamWindowBytes,
 	)
 	if err != nil {
 		return err
@@ -783,7 +783,7 @@ func (r *streamRuntime) refuseExternalTriggerIfIneligible(id backend.ID) bool {
 	estimateWarning := usage.Estimated && !r.estimateWarned
 	r.mu.Unlock()
 
-	targetLease, acquireErr := r.service.backends.Acquire(r.id.String(), failed.ID)
+	targetLease, acquireErr := r.service.acquireBackend(r.id.String(), r.model, failed.ID)
 	targetAvailable := acquireErr == nil
 	target := backend.State{Backend: backend.Backend{
 		ModelVersion: failed.ModelVersion, TemplateVerdict: failed.TemplateVerdict,
@@ -793,13 +793,13 @@ func (r *streamRuntime) refuseExternalTriggerIfIneligible(id backend.ID) bool {
 		targetLease.Release()
 	}
 	policy := migrate.Policy{
-		MaxMigrations:         uint64(r.service.config.MaxMigrations),
-		MaxMigrationTokens:    r.service.config.MaxMigrationTokens,
-		MaxStreamDuration:     r.service.config.MaxStreamDuration,
-		AllowStructuredResume: r.service.config.AllowStructuredResume,
-		AllowCrossVersion:     r.service.config.AllowCrossVersion,
-		SeamWindowBytes:       r.service.config.SeamWindowBytes,
-		TemplateMode:          r.service.config.TemplateMode,
+		MaxMigrations:         uint64(r.policy.MaxMigrations),
+		MaxMigrationTokens:    r.policy.MaxMigrationTokens,
+		MaxStreamDuration:     r.policy.MaxStreamDuration,
+		AllowStructuredResume: r.policy.AllowStructuredResume,
+		AllowCrossVersion:     r.policy.AllowCrossVersion,
+		SeamWindowBytes:       r.policy.SeamWindowBytes,
+		TemplateMode:          r.policy.TemplateMode,
 	}
 	eligibility, err := migrate.EvaluateEligibility(policy, migrate.EligibilitySnapshot{
 		MigrationsUsed:         migrationsUsed,
@@ -919,7 +919,7 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 	}
 	r.publishFirst(terminal)
 	r.refreshIdempotency()
-	time.AfterFunc(r.service.config.JournalTTL, func() {
+	time.AfterFunc(r.policy.JournalTTL, func() {
 		r.service.streams.CompareAndDelete(r.id, r)
 	})
 	return true

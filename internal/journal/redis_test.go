@@ -94,6 +94,48 @@ func TestRedisJournalLifecycleAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestRedisUsesPersistedPerStreamRetentionTTL(t *testing.T) {
+	t.Parallel()
+	server := miniredis.RunT(t)
+	client := redislib.NewClient(&redislib.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	config := DefaultRedisConfig()
+	config.Prefix = "test-per-stream-retention"
+	store, err := NewRedis(client, config)
+	if err != nil {
+		t.Fatalf("NewRedis(): %v", err)
+	}
+
+	ctx := context.Background()
+	shortID := newRedisTestStreamID(t)
+	longID := newRedisTestStreamID(t)
+	for _, item := range []struct {
+		id  StreamID
+		ttl time.Duration
+	}{{shortID, 5 * time.Second}, {longID, 20 * time.Second}} {
+		if err := store.Open(ctx, item.id, Meta{
+			Model: "model", BackendID: "backend", RetentionTTL: item.ttl,
+		}); err != nil {
+			t.Fatalf("Open(%s): %v", item.id, err)
+		}
+		if err := store.Close(ctx, item.id, Entry{Kind: KindDone, Payload: json.RawMessage(`{}`)}); err != nil {
+			t.Fatalf("Close(%s): %v", item.id, err)
+		}
+		keys := store.streamKeys(item.id)
+		requireRedisTTL(t, server, keys[0], item.ttl)
+		requireRedisTTL(t, server, keys[1], item.ttl)
+		requireRedisTTL(t, server, keys[2], 2*item.ttl)
+	}
+
+	server.FastForward(6 * time.Second)
+	if _, err := store.State(ctx, shortID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("State(short) error = %v, want ErrExpired", err)
+	}
+	if _, err := store.State(ctx, longID); err != nil {
+		t.Fatalf("State(long) before its retention expires: %v", err)
+	}
+}
+
 func TestRedisJournalDegradedPrefixAndGap(t *testing.T) {
 	t.Parallel()
 	store, server := newRedisTestStore(t, "test-degraded")

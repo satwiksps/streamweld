@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"sync/atomic"
-	"time"
+
+	"github.com/streamweld/streamweld/internal/backend"
 )
 
 var errProxyShuttingDown = errors.New("proxy is shutting down")
@@ -17,6 +15,41 @@ var errProxyShuttingDown = errors.New("proxy is shutting down")
 // A later backend pool can implement this interface without changing routing.
 type ReadinessChecker interface {
 	Check(context.Context) error
+}
+
+type backendPoolReadinessChecker struct {
+	pool       *backend.Pool
+	transition func(backend.ProbeResult)
+}
+
+func newBackendPoolReadinessChecker(
+	pool *backend.Pool,
+	transition func(backend.ProbeResult),
+) *backendPoolReadinessChecker {
+	return &backendPoolReadinessChecker{pool: pool, transition: transition}
+}
+
+func (checker *backendPoolReadinessChecker) Check(ctx context.Context) error {
+	if checker == nil || checker.pool == nil {
+		return errors.New("backend pool is unavailable")
+	}
+	results, err := checker.pool.ProbeAll(ctx)
+	if err != nil {
+		return fmt.Errorf("probe backend pool: %w", err)
+	}
+	if checker.transition != nil {
+		for _, result := range results {
+			if len(result.Transition.Bindings) != 0 {
+				checker.transition(result)
+			}
+		}
+	}
+	for _, state := range checker.pool.List() {
+		if state.Health == backend.HealthHealthy && !state.Draining && !state.Quarantined {
+			return nil
+		}
+	}
+	return errors.New("backend pool has no healthy serving backend")
 }
 
 type readinessGate struct {
@@ -44,55 +77,4 @@ func (g *readinessGate) Check(ctx context.Context) error {
 
 func (g *readinessGate) BeginShutdown() {
 	g.shuttingDown.Store(true)
-}
-
-type backendReadinessChecker struct {
-	client   *http.Client
-	endpoint *url.URL
-	timeout  time.Duration
-}
-
-func newBackendReadinessChecker(target *url.URL, transport http.RoundTripper, timeout time.Duration) *backendReadinessChecker {
-	endpoint := *target
-	endpoint.Path = "/health"
-	endpoint.RawPath = ""
-	endpoint.RawQuery = ""
-	endpoint.ForceQuery = false
-	return &backendReadinessChecker{
-		client: &http.Client{
-			Transport: transport,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-		endpoint: &endpoint,
-		timeout:  timeout,
-	}
-}
-
-func (c *backendReadinessChecker) Check(ctx context.Context) error {
-	probeContext, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(probeContext, http.MethodGet, c.endpoint.String(), nil)
-	if err != nil {
-		return fmt.Errorf("create backend health request: %w", err)
-	}
-	request.Header.Set("Accept", "application/json")
-
-	response, err := c.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("probe backend health: %w", err)
-	}
-	_, drainErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
-	closeErr := response.Body.Close()
-	if drainErr != nil {
-		return fmt.Errorf("read backend health response: %w", drainErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close backend health response: %w", closeErr)
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("backend health returned HTTP %d", response.StatusCode)
-	}
-	return nil
 }

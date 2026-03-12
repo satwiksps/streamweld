@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,13 +10,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/streamweld/streamweld/internal/conformance"
 )
 
-const defaultDoctorTimeout = 30 * time.Second
+const (
+	defaultDoctorTimeout = 30 * time.Second
+	defaultDrainTimeout  = 15 * time.Second
+	maxDrainResponse     = 64 << 10
+)
+
+var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -29,6 +39,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "drain":
+		return runDrain(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -37,6 +49,151 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+}
+
+type drainResult struct {
+	PodNamespace string `json:"pod_namespace"`
+	PodName      string `json:"pod_name"`
+	ProxyCount   int    `json:"proxy_count"`
+	InFlight     int    `json:"in_flight"`
+	State        string `json:"state"`
+}
+
+func runDrain(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("streamweldctl drain", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	endpoint := flags.String("endpoint", "http://127.0.0.1:8082", "operator drain endpoint (typically reached with kubectl port-forward)")
+	namespace := flags.String("namespace", "default", "namespace containing the backend Pod")
+	timeout := flags.Duration("timeout", defaultDrainTimeout, "deadline for the all-proxy drain barrier")
+	jsonOutput := flags.Bool("json", false, "emit the drain result as JSON")
+	flags.Usage = func() {
+		_, _ = fmt.Fprintln(stderr, "Usage: streamweldctl drain [--endpoint URL] [--namespace NAME] [--json] POD")
+		_, _ = fmt.Fprintln(stderr)
+		flags.PrintDefaults()
+	}
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if flags.NArg() != 1 {
+		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: exactly one Pod name is required")
+		flags.Usage()
+		return 2
+	}
+	pod := flags.Arg(0)
+	if !dnsLabelPattern.MatchString(*namespace) || !dnsLabelPattern.MatchString(pod) {
+		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: namespace and Pod must be canonical DNS labels")
+		return 2
+	}
+	if *timeout <= 0 {
+		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: --timeout must be positive")
+		return 2
+	}
+	baseURL, err := parseDrainEndpoint(*endpoint)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "streamweldctl drain: %v\n", err)
+		return 2
+	}
+	target := strings.TrimRight(baseURL.String(), "/") + "/internal/backends/by-pod/" +
+		url.PathEscape(*namespace) + "/" + url.PathEscape(pod) + "/drain"
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: construct request failed")
+		return 1
+	}
+	request.Header.Set("Accept", "application/json")
+	client := &http.Client{
+		Timeout:       *timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "streamweldctl drain: request failed: %v\n", err)
+		return 1
+	}
+	defer func() { _ = response.Body.Close() }()
+	result, err := decodeDrainResult(response.Body)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "streamweldctl drain: invalid operator response: %v\n", err)
+		return 1
+	}
+	if result.PodNamespace != *namespace || result.PodName != pod || result.ProxyCount < 0 || result.InFlight < 0 ||
+		(result.State != "drained" && result.State != "draining") {
+		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: operator returned an inconsistent result")
+		return 1
+	}
+	output := stdout
+	if response.StatusCode != http.StatusOK {
+		output = stderr
+	}
+	if err := writeDrainResult(output, result, *jsonOutput); err != nil {
+		_, _ = fmt.Fprintf(stderr, "streamweldctl drain: write result: %v\n", err)
+		return 1
+	}
+	if response.StatusCode != http.StatusOK || result.State != "drained" || result.InFlight != 0 {
+		return 1
+	}
+	return 0
+}
+
+func parseDrainEndpoint(raw string) (*url.URL, error) {
+	if raw == "" || strings.TrimSpace(raw) != raw {
+		return nil, errors.New("--endpoint must be an unpadded absolute HTTP(S) URL")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("--endpoint must be an absolute HTTP(S) URL without credentials, query, or fragment")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
+	return parsed, nil
+}
+
+func decodeDrainResult(reader io.Reader) (drainResult, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxDrainResponse+1))
+	if err != nil {
+		return drainResult{}, err
+	}
+	if len(data) > maxDrainResponse {
+		return drainResult{}, errors.New("response exceeds the size limit")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var result drainResult
+	if err := decoder.Decode(&result); err != nil {
+		return drainResult{}, err
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return drainResult{}, errors.New("response contains multiple JSON values")
+		}
+		return drainResult{}, err
+	}
+	return result, nil
+}
+
+func writeDrainResult(writer io.Writer, result drainResult, asJSON bool) error {
+	if asJSON {
+		encoder := json.NewEncoder(writer)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(result)
+	}
+	_, err := fmt.Fprintf(
+		writer,
+		"Pod: %s/%s\nProxies: %d\nState: %s\nIn flight: %d\n",
+		result.PodNamespace,
+		result.PodName,
+		result.ProxyCount,
+		result.State,
+		result.InFlight,
+	)
+	return err
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
@@ -142,4 +299,5 @@ func printUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer)
 	_, _ = fmt.Fprintln(writer, "Commands:")
 	_, _ = fmt.Fprintln(writer, "  doctor   probe chat-template continuation conformance")
+	_, _ = fmt.Fprintln(writer, "  drain    drain one backend Pod across every proxy replica")
 }

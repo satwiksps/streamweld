@@ -51,6 +51,7 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	flags.Int64Var(&config.JournalMaxTotalBytes, "journal-max-total-bytes", config.JournalMaxTotalBytes, "memory journal global byte cap")
 	flags.Int64Var(&config.ReaderMaxLagBytes, "reader-max-lag-bytes", config.ReaderMaxLagBytes, "maximum queued bytes for one stream reader")
 	flags.DurationVar(&config.ReaderWriteTimeout, "reader-write-timeout", config.ReaderWriteTimeout, "maximum time for each downstream stream write or flush")
+	flags.StringVar(&config.AdminTokenFile, "admin-token-file", config.AdminTokenFile, "file containing the bearer token required by route administration")
 	flags.Func("redis-url", "Redis connection URL (or STREAMWELD_REDIS_URL; omitted from help defaults)", func(value string) error {
 		config.RedisURL = value
 		return nil

@@ -42,6 +42,7 @@ type durableService struct {
 	idempotency journal.IdempotencyRegistry
 	logger      *slog.Logger
 	backends    *backend.Pool
+	routes      *routeBackendRegistry
 	relay       *relayCoordinator
 	owner       *journal.OwnerRecord
 
@@ -54,6 +55,8 @@ type durableService struct {
 type streamRuntime struct {
 	service         *durableService
 	id              journal.StreamID
+	model           string
+	policy          streamPolicy
 	endpoint        string
 	requestBody     []byte
 	requestHeader   http.Header
@@ -152,7 +155,7 @@ func newDurableService(
 func (s *durableService) resolve(
 	request *http.Request,
 	normalized normalizedRequest,
-	policy OrphanPolicy,
+	policy streamPolicy,
 	idempotencyKey string,
 ) (streamResolution, error) {
 	waitContext, cancelWait := context.WithTimeout(request.Context(), s.config.ReadinessTimeout)
@@ -173,11 +176,11 @@ func (s *durableService) resolve(
 				waitContext,
 				idempotencyKey,
 				id,
-				s.config.JournalTTL,
+				policy.JournalTTL,
 			)
 			if resolveErr != nil {
 				s.logDegraded(request, "idempotency resolution failed", resolveErr)
-				return s.resolveDegraded(id)
+				return s.resolveDegraded(id, normalized.Model)
 			}
 			digestValue := binding.Digest
 			digest = &digestValue
@@ -202,14 +205,14 @@ func (s *durableService) resolve(
 					continue
 				} else if !errors.Is(stateErr, journal.ErrExpired) {
 					s.logDegraded(request, "idempotent journal lookup failed", stateErr)
-					return s.resolveDegraded(id)
+					return s.resolveDegraded(id, normalized.Model)
 				}
 				_, removeErr := s.removeIdempotencyIfBound(
 					waitContext, binding.Digest, binding.ID,
 				)
 				if removeErr != nil {
 					s.logDegraded(request, "stale idempotency cleanup failed", removeErr)
-					return s.resolveDegraded(id)
+					return s.resolveDegraded(id, normalized.Model)
 				}
 				// Resolve again whether this caller removed the stale binding or
 				// another replica already replaced it. Conditional removal ensures
@@ -219,14 +222,15 @@ func (s *durableService) resolve(
 		}
 
 		meta := journal.Meta{
-			Model:       normalized.Model,
-			Endpoint:    request.URL.Path,
-			Request:     bytes.Clone(normalized.Body),
-			Owner:       s.owner,
-			Idempotency: digest,
+			Model:        normalized.Model,
+			Endpoint:     request.URL.Path,
+			Request:      bytes.Clone(normalized.Body),
+			Owner:        s.owner,
+			Idempotency:  digest,
+			RetentionTTL: policy.JournalTTL,
 		}
-		stopPendingLease := s.maintainPendingIdempotencyLease(digest, id)
-		lease, acquireErr := s.backends.Acquire(id.String())
+		stopPendingLease := s.maintainPendingIdempotencyLease(digest, id, policy.JournalTTL)
+		lease, acquireErr := s.acquireBackend(id.String(), normalized.Model)
 		if acquireErr != nil {
 			stopPendingLease()
 			if digest != nil {
@@ -266,10 +270,12 @@ func (s *durableService) resolve(
 		runtime := &streamRuntime{
 			service:                    s,
 			id:                         id,
+			model:                      normalized.Model,
+			policy:                     policy,
 			endpoint:                   request.URL.Path,
 			requestBody:                bytes.Clone(normalized.Body),
 			requestHeader:              cloneUpstreamHeaders(request.Header),
-			orphanPolicy:               policy,
+			orphanPolicy:               policy.OrphanPolicy,
 			idemDigest:                 digest,
 			currentLease:               lease,
 			currentBackend:             selected,
@@ -301,12 +307,32 @@ func (s *durableService) resolve(
 	}
 }
 
-func (s *durableService) resolveDegraded(id journal.StreamID) (streamResolution, error) {
-	lease, err := s.backends.Acquire(id.String())
+func (s *durableService) resolveDegraded(id journal.StreamID, model string) (streamResolution, error) {
+	lease, err := s.acquireBackend(id.String(), model)
 	if err != nil {
 		return streamResolution{}, fmt.Errorf("select degraded backend: %w", err)
 	}
 	return streamResolution{degraded: true, degradedLease: lease}, nil
+}
+
+func (s *durableService) acquireBackend(
+	owner string,
+	model string,
+	excluded ...backend.ID,
+) (*backend.Lease, error) {
+	if s.routes != nil {
+		return s.routes.acquireModel(owner, model, excluded...)
+	}
+	return s.backends.AcquireModel(owner, model, excluded...)
+}
+
+func (s *durableService) policyForModel(model string) streamPolicy {
+	if s.routes != nil {
+		if policy, ok := s.routes.policyForModel(model); ok {
+			return policy
+		}
+	}
+	return streamPolicyFromConfig(s.config)
 }
 
 func (s *durableService) start(runtime *streamRuntime, rawQuery string) (*upstreamRejection, error) {
@@ -522,7 +548,7 @@ func (r *streamRuntime) closeTerminal(
 	r.degradedFeed.close()
 	r.publishFirst(terminalEntry)
 	r.refreshIdempotency()
-	time.AfterFunc(r.service.config.JournalTTL, func() {
+	time.AfterFunc(r.policy.JournalTTL, func() {
 		r.service.streams.CompareAndDelete(r.id, r)
 	})
 	return nil
@@ -578,7 +604,7 @@ func (r *streamRuntime) detachReader() {
 		r.mu.Unlock()
 		go r.cancelOrphan()
 	case OrphanCancelAfter:
-		r.orphanTimer = time.AfterFunc(r.service.config.OrphanTimeout, r.cancelOrphan)
+		r.orphanTimer = time.AfterFunc(r.policy.OrphanTimeout, r.cancelOrphan)
 		r.mu.Unlock()
 	default:
 		r.mu.Unlock()
@@ -617,7 +643,7 @@ func (r *streamRuntime) cancelOrphan() {
 				r.service.logger.Debug("release orphan claim before grace period",
 					"stream_id", r.id, "error", err)
 			}
-			r.scheduleOrphanCheck(r.service.config.OrphanTimeout)
+			r.scheduleOrphanCheck(r.policy.OrphanTimeout)
 			return
 		}
 		r.remoteReaderWasAttached = false
@@ -650,7 +676,7 @@ func (r *streamRuntime) cancelOrphan() {
 	r.remoteReaderWasAttached = false
 	r.mu.Unlock()
 	if needsRemoteGrace {
-		r.scheduleOrphanCheck(r.service.config.OrphanTimeout)
+		r.scheduleOrphanCheck(r.policy.OrphanTimeout)
 		return
 	}
 	if err := r.finishErrorWhen(
@@ -707,7 +733,7 @@ func (r *streamRuntime) refreshIdempotency() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.service.config.ReadinessTimeout)
 	defer cancel()
-	if _, err := r.service.idempotency.Refresh(ctx, *r.idemDigest, r.service.config.JournalTTL); err != nil {
+	if _, err := r.service.idempotency.Refresh(ctx, *r.idemDigest, r.policy.JournalTTL); err != nil {
 		r.service.logger.Warn("refresh idempotency mapping", "stream_id", r.id, "error", err)
 	}
 }
@@ -715,6 +741,7 @@ func (r *streamRuntime) refreshIdempotency() {
 func (s *durableService) maintainPendingIdempotencyLease(
 	digest *journal.IdempotencyDigest,
 	id journal.StreamID,
+	ttl time.Duration,
 ) func() {
 	if digest == nil {
 		return func() {}
@@ -725,7 +752,7 @@ func (s *durableService) maintainPendingIdempotencyLease(
 	}
 	leaseContext, cancelLease := context.WithCancel(s.rootContext)
 	done := make(chan struct{})
-	interval := s.config.JournalTTL / 4
+	interval := ttl / 4
 	if interval > time.Second {
 		interval = time.Second
 	}
@@ -741,7 +768,7 @@ func (s *durableService) maintainPendingIdempotencyLease(
 			case <-ticker.C:
 				refreshContext, cancel := context.WithTimeout(leaseContext, s.config.ReadinessTimeout)
 				refreshed, err := registry.RefreshPending(
-					refreshContext, *digest, id, s.config.JournalTTL,
+					refreshContext, *digest, id, ttl,
 				)
 				cancel()
 				if err != nil {
@@ -792,7 +819,7 @@ func (s *durableService) removeIdempotencyIfBound(
 }
 
 func (r *streamRuntime) maintainIdempotencyLease() {
-	interval := r.service.config.JournalTTL / 2
+	interval := r.policy.JournalTTL / 2
 	if interval <= 0 {
 		interval = time.Millisecond
 	}
@@ -811,7 +838,7 @@ func (r *streamRuntime) maintainIdempotencyLease() {
 }
 
 func (r *streamRuntime) maintainJournalLease(lease journal.ActiveJournalLease) {
-	interval := r.service.config.JournalTTL / 2
+	interval := r.policy.JournalTTL / 2
 	if interval <= 0 {
 		interval = time.Millisecond
 	}

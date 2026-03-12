@@ -100,6 +100,7 @@ func TestConfigFromEnv(t *testing.T) {
 		"STREAMWELD_READER_WRITE_TIMEOUT":             "10s",
 		"STREAMWELD_REDIS_URL":                        "rediss://redis.example.test:6380/2",
 		"STREAMWELD_REDIS_KEY_PREFIX":                 "tenant-a",
+		"STREAMWELD_ADMIN_TOKEN_FILE":                 "/var/run/streamweld/admin-token",
 		"STREAMWELD_ORPHAN_POLICY":                    "cancel_after",
 		"STREAMWELD_ORPHAN_TIMEOUT":                   "12s",
 		"STREAMWELD_BACKEND_HEALTH_INTERVAL":          "13s",
@@ -150,6 +151,9 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 	if config.JournalBackend != JournalBackendRedis || config.RedisURL != values["STREAMWELD_REDIS_URL"] || config.RedisKeyPrefix != "tenant-a" {
 		t.Errorf("redis environment values not applied: %+v", config)
+	}
+	if config.AdminTokenFile != values["STREAMWELD_ADMIN_TOKEN_FILE"] {
+		t.Errorf("AdminTokenFile = %q", config.AdminTokenFile)
 	}
 	if config.BackendHealthInterval != 13*time.Second || config.BackendQuarantineWindow != 14*time.Second || config.MaxStreamDuration != 16*time.Minute || config.StallTimeout != 17*time.Second {
 		t.Errorf("migration duration values not applied: %+v", config)

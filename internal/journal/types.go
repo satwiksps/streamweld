@@ -85,6 +85,10 @@ type Meta struct {
 	ModelVersion *string      `json:"model_version"`
 	BackendID    string       `json:"backend_id"`
 	Owner        *OwnerRecord `json:"-"`
+	// RetentionTTL selects this stream's active and terminal retention period.
+	// Zero asks the journal implementation to use its configured default. It is
+	// private coordination metadata and is never persisted in public payloads.
+	RetentionTTL time.Duration `json:"-"`
 	// Idempotency identifies a pending reservation that Open must atomically
 	// promote with the journal. It is private coordination metadata and is never
 	// returned in the open entry or public stream state.

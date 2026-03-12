@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -167,6 +168,13 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 			URL:             target,
 			TemplateVerdict: conformance.VerdictUnknown,
 		}
+		healthURL := *target
+		healthURL.Path = "/health"
+		healthURL.RawPath = ""
+		healthURL.RawQuery = ""
+		healthURL.ForceQuery = false
+		healthURL.Fragment = ""
+		standalone.HealthURL = &healthURL
 		settings.backendPool, err = backend.NewPool(poolConfig, standalone)
 		if err != nil {
 			return nil, fmt.Errorf("create backend pool: %w", err)
@@ -174,9 +182,6 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		if _, err := settings.backendPool.SetHealth(standalone.ID, backend.HealthHealthy); err != nil {
 			return nil, fmt.Errorf("admit standalone backend: %w", err)
 		}
-	}
-	if settings.readinessChecker == nil {
-		settings.readinessChecker = newBackendReadinessChecker(target, settings.transport, config.ReadinessTimeout)
 	}
 	var journalClose func() error
 	if settings.journal == nil {
@@ -220,7 +225,6 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		}
 	}
 
-	readiness := newReadinessGate(settings.readinessChecker)
 	serverContext, forceCancel := context.WithCancel(context.Background())
 	durable := newDurableService(
 		serverContext,
@@ -233,6 +237,23 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		logger,
 		settings.backendPool,
 	)
+	if settings.readinessChecker == nil {
+		settings.readinessChecker = newBackendPoolReadinessChecker(
+			settings.backendPool,
+			func(result backend.ProbeResult) {
+				durable.triggerBindings("health", result.ID, result.Transition.Bindings)
+			},
+		)
+	}
+	readiness := newReadinessGate(settings.readinessChecker)
+	durable.routes, err = newRouteBackendRegistry(settings.backendPool)
+	if err != nil {
+		forceCancel()
+		if journalClose != nil {
+			_ = journalClose()
+		}
+		return nil, fmt.Errorf("create route backend registry: %w", err)
+	}
 	directory, _ := settings.journal.(journal.OwnerDirectory)
 	relay, err := newRelayCoordinator(relayConfig{
 		ReplicaID:        config.ReplicaID,
@@ -256,7 +277,15 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 	}
 	durable.relay = relay
 	durable.owner = relay.ownerRecord()
-	handler := newHandler(readiness, durable)
+	adminToken, err := loadAdminToken(config.AdminTokenFile)
+	if err != nil {
+		forceCancel()
+		if journalClose != nil {
+			_ = journalClose()
+		}
+		return nil, err
+	}
+	handler := newHandler(readiness, durable, adminToken)
 	httpServer := &http.Server{
 		Addr:              config.ListenAddress,
 		Handler:           handler,
@@ -283,6 +312,24 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		relay:        relay,
 		journalClose: journalClose,
 	}, nil
+}
+
+func loadAdminToken(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read admin token file: %w", err)
+	}
+	if len(data) == 0 || len(data) > 4096 {
+		return "", errors.New("admin token file must contain 1-4096 bytes")
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" || len(strings.Fields(token)) != 1 || strings.ContainsAny(token, "\r\n\x00") {
+		return "", errors.New("admin token file must contain one non-empty bearer token")
+	}
+	return token, nil
 }
 
 func ownedRedisClientOptions(config Config) (*redislib.Options, error) {

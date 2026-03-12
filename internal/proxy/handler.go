@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,18 +12,36 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+
+	"github.com/streamweld/streamweld/internal/backend"
 )
 
 const immediateFlushInterval = -1
 
 // Handler owns the public and administrative HTTP routing surface.
 type Handler struct {
-	readiness *readinessGate
-	durable   *durableService
+	readiness  *readinessGate
+	durable    *durableService
+	adminToken string
 }
 
-func newHandler(readiness *readinessGate, durable *durableService) *Handler {
-	return &Handler{readiness: readiness, durable: durable}
+func newHandler(readiness *readinessGate, durable *durableService, adminToken string) *Handler {
+	return &Handler{readiness: readiness, durable: durable, adminToken: adminToken}
+}
+
+func (h *Handler) authorizeAdmin(writer http.ResponseWriter, request *http.Request) bool {
+	if h.adminToken == "" {
+		return true
+	}
+	values := request.Header.Values("Authorization")
+	const prefix = "Bearer "
+	if len(values) != 1 || !strings.HasPrefix(values[0], prefix) ||
+		subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(values[0], prefix)), []byte(h.adminToken)) != 1 {
+		writer.Header().Set("WWW-Authenticate", "Bearer")
+		writeAPIError(writer, http.StatusUnauthorized, "admin_unauthorized", "administration requires a valid bearer token")
+		return false
+	}
+	return true
 }
 
 func newReverseProxy(target *url.URL, transport http.RoundTripper, logger *slog.Logger) *httputil.ReverseProxy {
@@ -58,8 +77,19 @@ func (h *Handler) proxyTo(writer http.ResponseWriter, request *http.Request, tar
 	newReverseProxy(target, h.durable.transport, h.durable.logger).ServeHTTP(writer, request)
 }
 
-func (h *Handler) proxyFromPool(writer http.ResponseWriter, request *http.Request) {
-	lease, err := h.durable.backends.Acquire("passthrough:" + request.Method + ":" + request.URL.Path)
+func (h *Handler) proxyFromPool(writer http.ResponseWriter, request *http.Request, model string) {
+	owner := "passthrough:" + request.Method + ":" + request.URL.Path
+	var lease *backend.Lease
+	var err error
+	if model == "" {
+		if h.durable.routes != nil {
+			lease, err = h.durable.routes.acquireModel(owner, "")
+		} else {
+			lease, err = h.durable.backends.Acquire(owner)
+		}
+	} else {
+		lease, err = h.durable.acquireBackend(owner, model)
+	}
 	if err != nil {
 		writeAPIError(writer, http.StatusServiceUnavailable, "no_healthy_backend", "no healthy backend can serve the request")
 		return
@@ -70,6 +100,10 @@ func (h *Handler) proxyFromPool(writer http.ResponseWriter, request *http.Reques
 
 // ServeHTTP dispatches OpenAI-compatible data-plane and Streamweld endpoints.
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if strings.HasPrefix(request.URL.Path, "/internal/routes/") {
+		h.handleRouteBackends(writer, request)
+		return
+	}
 	if strings.HasPrefix(request.URL.Path, "/internal/backends/") {
 		h.handleBackendDrainRoute(writer, request)
 		return
@@ -93,7 +127,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 	case "/v1/models":
 		if requireMethod(writer, request, http.MethodGet) {
-			h.proxyFromPool(writer, request)
+			h.proxyFromPool(writer, request, "")
 		}
 	default:
 		if strings.HasPrefix(request.URL.Path, "/v1/streams/") {

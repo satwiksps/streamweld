@@ -107,6 +107,40 @@ func TestMemoryConfigDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestMemoryUsesImmutablePerStreamRetentionTTL(t *testing.T) {
+	t.Parallel()
+	clock := &fakeClock{now: time.Unix(100, 0).UTC()}
+	memory := newTestMemory(t, clock)
+	shortID := newTestID(t)
+	longID := newTestID(t)
+	ctx := context.Background()
+	for _, item := range []struct {
+		id  StreamID
+		ttl time.Duration
+	}{{shortID, time.Second}, {longID, 5 * time.Second}} {
+		if err := memory.Open(ctx, item.id, Meta{
+			Model: "model", BackendID: "backend", RetentionTTL: item.ttl,
+		}); err != nil {
+			t.Fatalf("Open(%s): %v", item.id, err)
+		}
+		if err := memory.Close(ctx, item.id, Entry{Kind: KindDone, Payload: json.RawMessage(`{}`)}); err != nil {
+			t.Fatalf("Close(%s): %v", item.id, err)
+		}
+	}
+
+	clock.Add(1500 * time.Millisecond)
+	if _, err := memory.State(ctx, shortID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("State(short) error = %v, want ErrExpired", err)
+	}
+	if _, err := memory.State(ctx, longID); err != nil {
+		t.Fatalf("State(long) before its retention expires: %v", err)
+	}
+	clock.Add(4 * time.Second)
+	if _, err := memory.State(ctx, longID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("State(long) error = %v, want ErrExpired", err)
+	}
+}
+
 func TestMemoryLifecycleReadAndState(t *testing.T) {
 	clock := &fakeClock{now: time.Date(2026, 8, 22, 10, 0, 0, 0, time.FixedZone("test", 5*60*60))}
 	memory := newTestMemory(t, clock)

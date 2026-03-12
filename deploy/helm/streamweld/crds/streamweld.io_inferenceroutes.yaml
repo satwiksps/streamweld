@@ -1,0 +1,236 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferenceroutes.streamweld.io
+spec:
+  group: streamweld.io
+  names:
+    kind: InferenceRoute
+    listKind: InferenceRouteList
+    plural: inferenceroutes
+    shortNames:
+      - ir
+    singular: inferenceroute
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns:
+        - jsonPath: .spec.model
+          name: Model
+          type: string
+        - jsonPath: .status.healthyBackends
+          name: Healthy
+          type: integer
+        - jsonPath: .status.templateVerdict
+          name: Verdict
+          type: string
+        - jsonPath: .status.activeStreams
+          name: Active
+          type: integer
+        - jsonPath: .metadata.creationTimestamp
+          name: Age
+          type: date
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: InferenceRoute binds a model to a dynamically discovered backend pool and durability policy.
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - backends
+                - model
+                - policyRef
+              properties:
+                model:
+                  description: Exact model identifier sent to and probed on every backend.
+                  minLength: 1
+                  pattern: '^[^[:space:]](.*[^[:space:]])?$'
+                  type: string
+                backends:
+                  type: object
+                  required:
+                    - port
+                    - selector
+                  properties:
+                    port:
+                      description: TCP port serving the OpenAI-compatible backend API.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    selector:
+                      description: Namespaced selector for backend pods and their EndpointSlices.
+                      type: object
+                      x-kubernetes-map-type: atomic
+                      properties:
+                        matchExpressions:
+                          type: array
+                          items:
+                            type: object
+                            required:
+                              - key
+                              - operator
+                            properties:
+                              key:
+                                type: string
+                              operator:
+                                enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
+                                type: string
+                              values:
+                                type: array
+                                items:
+                                  type: string
+                                x-kubernetes-list-type: atomic
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          type: object
+                          additionalProperties:
+                            type: string
+                      x-kubernetes-validations:
+                        - message: selector must contain matchLabels or matchExpressions
+                          rule: (has(self.matchLabels) && size(self.matchLabels) > 0) || (has(self.matchExpressions) && size(self.matchExpressions) > 0)
+                policyRef:
+                  description: Names a DurabilityPolicy in this namespace.
+                  type: object
+                  x-kubernetes-map-type: atomic
+                  required:
+                    - name
+                  properties:
+                    name:
+                      maxLength: 253
+                      minLength: 1
+                      pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+                      type: string
+            status:
+              type: object
+              properties:
+                activeStreams:
+                  format: int64
+                  minimum: 0
+                  type: integer
+                backends:
+                  description: Per-backend readiness and exact conformance probe-cache metadata.
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - address
+                      - draining
+                      - id
+                      - ready
+                      - templateVerdict
+                    properties:
+                      address:
+                        maxLength: 512
+                        minLength: 1
+                        type: string
+                      draining:
+                        type: boolean
+                      id:
+                        maxLength: 512
+                        minLength: 1
+                        type: string
+                      imageDigest:
+                        maxLength: 256
+                        type: string
+                      lastProbedAt:
+                        format: date-time
+                        type: string
+                      message:
+                        description: Bounded redacted probe summary; credentials, request bodies, and raw model output are forbidden.
+                        maxLength: 2048
+                        type: string
+                      ready:
+                        type: boolean
+                      templateVerdict:
+                        enum:
+                          - UNKNOWN
+                          - SAFE
+                          - DEGRADED
+                          - UNSAFE
+                        type: string
+                      tokenizerHash:
+                        maxLength: 256
+                        type: string
+                  x-kubernetes-list-map-keys:
+                    - id
+                  x-kubernetes-list-type: map
+                conditions:
+                  description: Includes Ready, TemplateSafe, and Degraded.
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    properties:
+                      lastTransitionTime:
+                        format: date-time
+                        type: string
+                      message:
+                        maxLength: 32768
+                        type: string
+                      observedGeneration:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      reason:
+                        maxLength: 1024
+                        minLength: 1
+                        pattern: '^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$'
+                        type: string
+                      status:
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        maxLength: 316
+                        pattern: '^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$'
+                        type: string
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
+                drainingBackends:
+                  format: int32
+                  minimum: 0
+                  type: integer
+                healthyBackends:
+                  format: int32
+                  minimum: 0
+                  type: integer
+                observedGeneration:
+                  format: int64
+                  minimum: 0
+                  type: integer
+                templateProbedAt:
+                  format: date-time
+                  type: string
+                templateVerdict:
+                  enum:
+                    - UNKNOWN
+                    - SAFE
+                    - DEGRADED
+                    - UNSAFE
+                  type: string
+      served: true
+      storage: true
+      subresources:
+        status: {}
