@@ -4,6 +4,7 @@ GO ?= go
 PNPM ?= pnpm
 GOLANGCI_LINT ?= golangci-lint
 HELM ?= helm
+HELM_INSTALL_ARGS ?=
 TERRAFORM ?= terraform
 TFLINT ?= tflint
 GO_TEST_FLAGS ?=
@@ -62,7 +63,7 @@ dev: ## Run the development proxy.
 	$(GO) run ./cmd/streamweld-proxy
 
 e2e: ## Run the kind-based end-to-end suite.
-	$(GO) test -race ./test/e2e/...
+	bash test/e2e/run-kind.sh
 
 chaos: ## Run the deterministic chaos suite.
 	$(GO) test -race ./test/chaos/...
@@ -76,10 +77,14 @@ demo: ## Start the failure-injection demo.
 	$(PNPM) --filter @streamweld/demo run dev
 
 helm-lint: ## Lint the Streamweld Helm chart.
-	$(HELM) lint deploy/helm/streamweld
+	$(HELM) lint deploy/helm/streamweld --strict --kube-version 1.32.0
+	$(HELM) template streamweld deploy/helm/streamweld --namespace streamweld-system --kube-version 1.32.0 >/dev/null
+	@if $(HELM) template unsafe-memory deploy/helm/streamweld --namespace streamweld-system --kube-version 1.32.0 --set proxy.replicaCount=2 >/dev/null 2>&1; then \
+		echo "expected replicas>1 with journal.backend=memory to fail rendering" >&2; exit 1; \
+	fi
 
 helm-install: ## Install the chart into the active Kubernetes context.
-	$(HELM) upgrade --install streamweld deploy/helm/streamweld --namespace streamweld-system --create-namespace --wait --timeout 5m
+	$(HELM) upgrade --install streamweld deploy/helm/streamweld --namespace streamweld-system --create-namespace --wait --timeout 5m $(HELM_INSTALL_ARGS)
 
 terraform-validate: ## Initialize without remote state and validate Terraform.
 	$(TERRAFORM) -chdir=infra/terraform init -backend=false

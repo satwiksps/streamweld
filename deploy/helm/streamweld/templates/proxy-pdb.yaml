@@ -1,0 +1,18 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "streamweld.proxyName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  {{- if ne .Values.podDisruptionBudget.minAvailable nil }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "streamweld.proxySelectorLabels" . | nindent 6 }}
+{{- end }}

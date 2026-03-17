@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "streamweld.proxyName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+data:
+  STREAMWELD_BACKEND: {{ .Values.proxy.backendURL | quote }}
+  STREAMWELD_LISTEN: ":8080"
+  STREAMWELD_LOG_LEVEL: {{ .Values.proxy.logLevel | quote }}
+  STREAMWELD_JOURNAL_BACKEND: {{ .Values.journal.backend | quote }}
+  STREAMWELD_JOURNAL_TTL: {{ .Values.journal.ttl | quote }}
+  STREAMWELD_JOURNAL_MAX_BYTES_PER_STREAM: {{ .Values.journal.maxBytesPerStream | quote }}
+  STREAMWELD_JOURNAL_MAX_TOTAL_BYTES: {{ .Values.journal.maxTotalBytes | quote }}
+  STREAMWELD_REDIS_KEY_PREFIX: {{ .Values.journal.redis.keyPrefix | quote }}
+  STREAMWELD_READER_MAX_LAG_BYTES: {{ .Values.reader.maxLagBytes | quote }}
+  STREAMWELD_READER_WRITE_TIMEOUT: {{ .Values.reader.writeTimeout | quote }}
+  STREAMWELD_MAX_MIGRATIONS: {{ .Values.migration.maxMigrations | quote }}
+  STREAMWELD_MAX_MIGRATION_TOKENS: {{ .Values.migration.maxTokens | quote }}
+  STREAMWELD_MAX_STREAM_DURATION: {{ .Values.migration.maxStreamDuration | quote }}
+  STREAMWELD_ALLOW_CROSS_VERSION: {{ .Values.migration.allowCrossVersion | quote }}
+  STREAMWELD_ALLOW_STRUCTURED_RESUME: {{ .Values.migration.allowStructuredResume | quote }}
+  STREAMWELD_SEAM_WINDOW_BYTES: {{ .Values.migration.seamWindowBytes | quote }}
+  STREAMWELD_TEMPLATE_MODE: {{ .Values.migration.templateMode | quote }}
+  STREAMWELD_STALL_DETECTION_ENABLED: {{ .Values.migration.stallDetection.enabled | quote }}
+  STREAMWELD_STALL_TIMEOUT: {{ .Values.migration.stallDetection.timeout | quote }}
+  STREAMWELD_ORPHAN_POLICY: {{ .Values.orphan.policy | quote }}
+  STREAMWELD_ORPHAN_TIMEOUT: {{ .Values.orphan.timeout | quote }}
+  STREAMWELD_SHUTDOWN_TIMEOUT: "15s"
+  STREAMWELD_ADMIN_TOKEN_FILE: /var/run/secrets/streamweld/admin-token
+  {{- if .Values.relay.enabled }}
+  STREAMWELD_RELAY_LISTEN: {{ printf ":%d" (int .Values.relay.port) | quote }}
+  STREAMWELD_RELAY_HEARTBEAT_INTERVAL: {{ .Values.relay.heartbeatInterval | quote }}
+  STREAMWELD_RELAY_PRESENCE_TTL: {{ .Values.relay.presenceTTL | quote }}
+  STREAMWELD_RELAY_CA_FILE: /var/run/secrets/streamweld-relay/ca.crt
+  STREAMWELD_RELAY_CERT_FILE: /var/run/secrets/streamweld-relay/tls.crt
+  STREAMWELD_RELAY_KEY_FILE: /var/run/secrets/streamweld-relay/tls.key
+  {{- end }}

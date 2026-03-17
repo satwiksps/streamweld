@@ -1,0 +1,129 @@
+{{- if .Values.operator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "streamweld.operatorName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "streamweld.operatorSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.operator.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "streamweld.operatorSelectorLabels" . | nindent 8 }}
+        {{- with .Values.operator.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "streamweld.operatorServiceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.operator.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image.repository }}:{{ default .Chart.AppVersion .Values.operator.image.tag }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.operator.securityContext | nindent 12 }}
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --leader-elect={{ .Values.operator.leaderElect }}
+            - --admin-url={{ default (printf "http://%s:%d" (include "streamweld.proxyName" .) (int .Values.proxy.service.port)) .Values.operator.adminURL }}
+            - --admin-token-file=/var/run/secrets/streamweld/admin-token
+            - --allow-insecure-admin-http=true
+            - --admin-timeout={{ .Values.operator.adminTimeout }}
+            - --admin-service-namespace={{ .Release.Namespace }}
+            - --admin-service-name={{ include "streamweld.proxyName" . }}
+            - --admin-endpoint-port=8080
+            - --admin-fanout-concurrency={{ .Values.operator.adminFanoutConcurrency }}
+            - --drain-bind-address=:{{ .Values.operator.drain.port }}
+            - --drain-timeout={{ .Values.operator.drain.timeout }}
+            - --drain-fanout-concurrency={{ .Values.operator.drain.fanoutConcurrency }}
+            - --enable-pod-mutation={{ .Values.webhook.enabled }}
+            {{- if .Values.webhook.enabled }}
+            - --webhook-port={{ .Values.webhook.port }}
+            - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
+            - --drain-hook-host={{ printf "%s.%s.svc" (include "streamweld.operatorName" .) .Release.Namespace }}
+            - --drain-hook-port={{ .Values.operator.drain.port }}
+            {{- end }}
+          {{- with .Values.operator.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: drain
+              containerPort: {{ .Values.operator.drain.port }}
+              protocol: TCP
+            {{- if .Values.webhook.enabled }}
+            - name: webhook
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+          volumeMounts:
+            - name: admin-token
+              mountPath: /var/run/secrets/streamweld
+              readOnly: true
+            {{- if .Values.webhook.enabled }}
+            - name: webhook-certificates
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: admin-token
+          secret:
+            secretName: {{ include "streamweld.adminSecretName" . }}
+            items:
+              - key: token
+                path: admin-token
+        {{- if .Values.webhook.enabled }}
+        - name: webhook-certificates
+          secret:
+            secretName: {{ include "streamweld.webhookSecretName" . }}
+        {{- end }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,160 @@
+{{- include "streamweld.validateValues" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "streamweld.proxyName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.proxy.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "streamweld.proxySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/proxy-configmap.yaml") . | sha256sum }}
+        {{- with .Values.proxy.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "streamweld.proxySelectorLabels" . | nindent 8 }}
+        {{- with .Values.proxy.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- if .Values.relay.enabled }}
+      subdomain: {{ include "streamweld.relayName" . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.proxy.podSecurityContext | nindent 8 }}
+      containers:
+        - name: proxy
+          image: "{{ .Values.proxy.image.repository }}:{{ default .Chart.AppVersion .Values.proxy.image.tag }}"
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.proxy.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "streamweld.proxyName" . }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STREAMWELD_REPLICA_ID
+              value: "$(POD_NAME)"
+            {{- if eq .Values.journal.backend "redis" }}
+            - name: STREAMWELD_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "streamweld.redisSecretName" . }}
+                  key: {{ .Values.journal.redis.secretKey }}
+            {{- end }}
+            {{- if .Values.relay.enabled }}
+            - name: STREAMWELD_RELAY_ADVERTISE_URL
+              value: {{ printf "https://$(POD_NAME).%s.$(POD_NAMESPACE).svc:%d" (include "streamweld.relayName" .) (int .Values.relay.port) | quote }}
+            {{- end }}
+            {{- with .Values.proxy.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.relay.enabled }}
+            - name: relay
+              containerPort: {{ .Values.relay.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              # The chart can install before a selected backend exists. Use
+              # /readyz at the traffic gateway when backend readiness must be
+              # part of routing; Kubernetes keeps the proxy process available
+              # here so the operator can program its first backend set.
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: admin-token
+              mountPath: /var/run/secrets/streamweld
+              readOnly: true
+            {{- if .Values.relay.enabled }}
+            - name: relay-tls
+              mountPath: /var/run/secrets/streamweld-relay
+              readOnly: true
+            {{- end }}
+            {{- with .Values.proxy.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: admin-token
+          secret:
+            secretName: {{ include "streamweld.adminSecretName" . }}
+            items:
+              - key: token
+                path: admin-token
+        {{- if .Values.relay.enabled }}
+        - name: relay-tls
+          secret:
+            secretName: {{ .Values.relay.tls.existingSecret }}
+            items:
+              - key: {{ .Values.relay.tls.caKey }}
+                path: ca.crt
+              - key: {{ .Values.relay.tls.certificateKey }}
+                path: tls.crt
+              - key: {{ .Values.relay.tls.privateKeyKey }}
+                path: tls.key
+        {{- end }}
+        {{- with .Values.proxy.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.proxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxy.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

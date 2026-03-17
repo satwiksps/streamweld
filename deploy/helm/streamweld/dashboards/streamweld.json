@@ -1,0 +1,45 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Active streams",
+      "targets": [{"expr": "sum(streamweld_streams_active)", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}
+    },
+    {
+      "type": "stat",
+      "title": "Journal degraded",
+      "targets": [{"expr": "max(streamweld_journal_degraded)", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Migrations",
+      "targets": [{"expr": "sum by (reason) (rate(streamweld_migrations_total[5m]))", "legendFormat": "{{reason}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Stream outcomes",
+      "targets": [{"expr": "sum by (outcome) (rate(streamweld_streams_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}],
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens rescued",
+      "targets": [{"expr": "sum(rate(streamweld_tokens_rescued_total[5m]))", "refId": "A"}],
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["streamweld", "inference"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": "Streamweld",
+  "uid": "streamweld",
+  "version": 1
+}

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: streamweld
+description: Durable, migratable OpenAI-compatible inference streams on Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/streamweld/streamweld
+sources:
+  - https://github.com/streamweld/streamweld
+keywords:
+  - inference
+  - llm
+  - streaming
+  - durability
+maintainers:
+  - name: Streamweld maintainers

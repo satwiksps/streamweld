@@ -1,0 +1,215 @@
+# A Redis journal is required before proxy replicaCount or HPA maxReplicas can
+# exceed one. The chart fails rendering instead of deploying an unsafe layout.
+nameOverride: ""
+fullnameOverride: ""
+imagePullSecrets: []
+
+proxy:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/streamweld/streamweld-proxy
+    tag: ""
+    pullPolicy: IfNotPresent
+  backendURL: http://streamweld-sample-backend:8000
+  logLevel: info
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  terminationGracePeriodSeconds: 30
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+journal:
+  backend: memory
+  ttl: 10m
+  maxBytesPerStream: 4194304
+  maxTotalBytes: 268435456
+  redis:
+    url: ""
+    existingSecret: ""
+    secretKey: redis-url
+    keyPrefix: streamweld
+
+reader:
+  maxLagBytes: 1048576
+  writeTimeout: 30s
+
+migration:
+  maxMigrations: 3
+  maxTokens: 8192
+  maxStreamDuration: 15m
+  allowCrossVersion: false
+  allowStructuredResume: false
+  seamWindowBytes: 64
+  templateMode: strict
+  stallDetection:
+    enabled: false
+    timeout: 30s
+
+orphan:
+  policy: continue
+  timeout: 60s
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: null
+  maxUnavailable: 1
+
+operator:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/streamweld/streamweld-operator
+    tag: ""
+    pullPolicy: IfNotPresent
+  leaderElect: true
+  adminURL: ""
+  adminTimeout: 5s
+  adminFanoutConcurrency: 8
+  drain:
+    port: 8082
+    timeout: 10s
+    fanoutConcurrency: 8
+    # Add namespace labels here when managed backend pods run outside the
+    # release namespace. An empty selector keeps the drain Service local.
+    allowedNamespaceSelector: {}
+  adminExistingSecret: ""
+  # Leave empty to generate and retain a release-scoped token Secret.
+  adminToken: ""
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  terminationGracePeriodSeconds: 30
+  extraEnv: []
+
+webhook:
+  enabled: false
+  port: 9443
+  failurePolicy: Ignore
+  timeoutSeconds: 5
+  existingSecret: ""
+  caBundle: ""
+  certManager:
+    enabled: false
+    issuerRef:
+      kind: ClusterIssuer
+      name: ""
+
+redis:
+  enabled: false
+  image:
+    repository: redis
+    tag: 7.4-alpine
+    pullPolicy: IfNotPresent
+  auth:
+    enabled: true
+    password: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+relay:
+  enabled: false
+  port: 8081
+  heartbeatInterval: 2s
+  presenceTTL: 10s
+  tls:
+    existingSecret: ""
+    caKey: ca.crt
+    certificateKey: tls.crt
+    privateKeyKey: tls.key
+  networkPolicy:
+    # Required while the operator's unauthenticated lifecycle drain listener
+    # is enabled; rendering fails if this is disabled with operator.enabled.
+    enabled: true
+    # Also permits proxy HTTP ingress and operator metrics from matching
+    # namespaces. The drain listener remains release-namespace-only.
+    publicIngressNamespaceSelector: {}
+
+serviceMonitor:
+  enabled: false
+  labels: {}
+  interval: 30s
+  scrapeTimeout: 10s
+
+grafanaDashboard:
+  enabled: false
+  labels:
+    grafana_dashboard: "1"

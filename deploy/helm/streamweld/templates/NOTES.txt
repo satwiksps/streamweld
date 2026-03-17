@@ -1,0 +1,28 @@
+Streamweld is installed in namespace {{ .Release.Namespace }}.
+
+Proxy service:
+  http://{{ include "streamweld.proxyName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.proxy.service.port }}
+
+{{- if eq .Values.journal.backend "memory" }}
+The in-memory journal is intentionally single-replica. Select the Redis journal
+before enabling autoscaling or increasing proxy.replicaCount.
+{{- else }}
+The Redis journal is enabled for cross-replica stream recovery.
+{{- end }}
+
+Backend rollout guidance:
+{{- if .Values.operator.enabled }}
+  Set backend terminationGracePeriodSeconds to 15 and POST the pod-specific
+  drain path to http://{{ include "streamweld.operatorName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.operator.drain.port }}
+  from a preStop hook. The operator fans this request to every proxy replica;
+  it fails closed if no proxy endpoint can be discovered. Do not use the proxy
+  ClusterIP directly for HA drains. The sample backend demonstrates the
+  complete hook.
+{{- else }}
+  The operator is disabled, so this release has no all-replica drain Service.
+  Provide an equivalent authenticated fanout before rolling active backends;
+  a direct proxy ClusterIP drain reaches only one proxy process.
+{{- end }}
+
+Run the chart health test with:
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}

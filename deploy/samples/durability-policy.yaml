@@ -1,0 +1,15 @@
+apiVersion: streamweld.io/v1alpha1
+kind: DurabilityPolicy
+metadata:
+  name: sample-durable
+  namespace: streamweld-system
+spec:
+  maxMigrations: 3
+  maxMigrationTokens: 8192
+  maxStreamDuration: 15m
+  orphanPolicy: continue
+  orphanTimeout: 60s
+  allowCrossVersion: false
+  allowStructuredResume: false
+  seamWindowBytes: 64
+  journalTTL: 10m

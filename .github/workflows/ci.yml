@@ -102,6 +102,10 @@ jobs:
           go-version-file: go.mod
           cache: false
       - if: steps.suite.outputs.enabled == 'true'
+        uses: azure/setup-helm@v4.3.1
+        with:
+          version: v4.0.0
+      - if: steps.suite.outputs.enabled == 'true'
         uses: helm/kind-action@v1.14.0
       - if: steps.suite.outputs.enabled == 'true'
         run: make e2e
@@ -123,11 +127,11 @@ jobs:
             echo "terraform=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.inputs.outputs.helm == 'true'
-        uses: helm/kind-action@v1.14.0
+        uses: azure/setup-helm@v4.3.1
+        with:
+          version: v4.0.0
       - if: steps.inputs.outputs.helm == 'true'
         run: make helm-lint
-      - if: steps.inputs.outputs.helm == 'true'
-        run: make helm-install
       - if: steps.inputs.outputs.terraform == 'true'
         uses: hashicorp/setup-terraform@v4.0.1
       - if: steps.inputs.outputs.terraform == 'true'

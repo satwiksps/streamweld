@@ -1,0 +1,19 @@
+{{- if .Values.relay.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamweld.relayName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: relay
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "streamweld.proxySelectorLabels" . | nindent 4 }}
+  ports:
+    - name: relay
+      port: {{ .Values.relay.port }}
+      targetPort: relay
+      protocol: TCP
+{{- end }}

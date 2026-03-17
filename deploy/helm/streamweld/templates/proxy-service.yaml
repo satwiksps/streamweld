@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamweld.proxyName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+  {{- with .Values.proxy.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.proxy.service.type }}
+  selector:
+    {{- include "streamweld.proxySelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.proxy.service.port }}
+      targetPort: http
+      protocol: TCP

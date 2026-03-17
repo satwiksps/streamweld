@@ -1,0 +1,14 @@
+apiVersion: streamweld.io/v1alpha1
+kind: InferenceRoute
+metadata:
+  name: deterministic-vllm
+  namespace: streamweld-system
+spec:
+  model: streamweld/deterministic-vllm
+  backends:
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: streamweld-sample-backend
+    port: 8000
+  policyRef:
+    name: sample-durable

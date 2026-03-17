@@ -1,0 +1,17 @@
+{{- if .Values.operator.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamweld.operatorName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  selector:
+    {{- include "streamweld.operatorSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: drain
+      port: {{ .Values.operator.drain.port }}
+      targetPort: drain
+      protocol: TCP
+{{- end }}

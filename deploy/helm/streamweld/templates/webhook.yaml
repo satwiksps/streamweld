@@ -1,0 +1,74 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamweld.webhookName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  selector:
+    {{- include "streamweld.operatorSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: 443
+      targetPort: webhook
+      protocol: TCP
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "streamweld.webhookName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+  {{- if .Values.webhook.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" .Release.Namespace (include "streamweld.webhookName" .) | quote }}
+  {{- end }}
+webhooks:
+  - name: mpods.streamweld.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    reinvocationPolicy: Never
+    matchPolicy: Equivalent
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: {{ include "streamweld.webhookName" . }}
+        path: /mutate-v1-pod
+        port: 443
+      {{- if not .Values.webhook.certManager.enabled }}
+      caBundle: {{ .Values.webhook.caBundle | quote }}
+      {{- end }}
+    objectSelector:
+      matchLabels:
+        streamweld.io/managed: "true"
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: Namespaced
+{{- if .Values.webhook.certManager.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "streamweld.webhookName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  secretName: {{ include "streamweld.webhookSecretName" . }}
+  dnsNames:
+    - {{ include "streamweld.webhookName" . }}
+    - {{ printf "%s.%s" (include "streamweld.webhookName" .) .Release.Namespace }}
+    - {{ printf "%s.%s.svc" (include "streamweld.webhookName" .) .Release.Namespace }}
+  issuerRef:
+    kind: {{ .Values.webhook.certManager.issuerRef.kind }}
+    name: {{ required "webhook.certManager.issuerRef.name is required" .Values.webhook.certManager.issuerRef.name }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,119 @@
+{{- if .Values.relay.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "streamweld.proxyName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "streamweld.proxySelectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    # Keep operator-to-proxy drain fanout and plaintext admin traffic
+    # namespace-local. The operator authenticates both route updates and drain
+    # requests with the shared admin bearer; this boundary adds network-layer
+    # isolation for the HTTP listener.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- with .Values.relay.networkPolicy.publicIngressNamespaceSelector }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.relay.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "streamweld.proxySelectorLabels" . | nindent 14 }}
+      ports:
+        - port: relay
+          protocol: TCP
+    {{- end }}
+{{- if .Values.operator.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "streamweld.operatorName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "streamweld.operatorSelectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    # Backend preStop hooks have no bearer-token facility. Limit the drain
+    # listener (and operator metrics) to workloads in the release namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - port: drain
+          protocol: TCP
+        - port: metrics
+          protocol: TCP
+    {{- with .Values.operator.drain.allowedNamespaceSelector }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+      ports:
+        - port: drain
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.relay.networkPolicy.publicIngressNamespaceSelector }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+      ports:
+        - port: metrics
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.webhook.enabled }}
+    # Kubernetes API server source addresses vary by distribution. Expose
+    # only the TLS webhook port; the drain listener stays namespace-private.
+    - ports:
+        - port: webhook
+          protocol: TCP
+    {{- end }}
+{{- end }}
+{{- if .Values.redis.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "streamweld.redisName" . }}
+  labels:
+    {{- include "streamweld.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "streamweld.redisSelectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "streamweld.proxySelectorLabels" . | nindent 14 }}
+      ports:
+        - port: redis
+          protocol: TCP
+{{- end }}
+{{- end }}
