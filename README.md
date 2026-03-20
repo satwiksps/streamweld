@@ -76,6 +76,52 @@ Drain one registered backend and wait for its leases to reach zero:
 curl -X POST 'http://127.0.0.1:8080/internal/backends/127.0.0.1%3A8000/drain?timeout=10s'
 ```
 
+## Kubernetes operator
+
+Install the single-replica memory profile and apply the deterministic CPU-only
+sample:
+
+```sh
+helm upgrade --install streamweld deploy/helm/streamweld \
+  --namespace streamweld-system --create-namespace
+
+kubectl apply -f deploy/samples/deterministic-backend.yaml
+kubectl apply -f deploy/samples/durability-policy.yaml
+kubectl apply -f deploy/samples/inference-route.yaml
+```
+
+`InferenceRoute` binds an exact model to selected backend Pods and a
+`DurabilityPolicy`. The operator probes each newly Ready backend, then pushes a
+UID- and generation-fenced snapshot directly to every proxy Pod. EndpointSlice
+changes do not restart proxies. Route deletion completes only after every
+non-terminating proxy acknowledges the tombstone.
+
+For multiple proxy replicas, use a shared Redis journal:
+
+```sh
+helm upgrade --install streamweld deploy/helm/streamweld \
+  --namespace streamweld-system --create-namespace \
+  --set journal.backend=redis \
+  --set redis.enabled=true \
+  --set proxy.replicaCount=2
+```
+
+Backend rollout drains are Pod-scoped and fanned out by the operator to every
+proxy replica. A manual drain uses the same all-replica barrier:
+
+```sh
+kubectl -n streamweld-system port-forward service/streamweld-operator 8082:8082
+streamweldctl drain --endpoint http://127.0.0.1:8082 --namespace models POD_NAME
+```
+
+Do not point an HA pre-stop hook at the proxy ClusterIP: one request reaches
+only one process. Keep the chart NetworkPolicy enabled because Kubernetes HTTP
+lifecycle hooks cannot attach the route-admin bearer token; the operator adds
+that token to its downstream per-proxy drain calls. The optional Pod
+webhook is disabled by default and requires an explicit serving certificate.
+See [`deploy/helm/streamweld/README.md`](deploy/helm/streamweld/README.md) for
+validated install profiles.
+
 ### Redis and multi-replica mode
 
 The default memory journal is bounded, process-local, and supports exactly one

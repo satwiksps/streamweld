@@ -905,12 +905,46 @@ On timeout it returns `504 Gateway Timeout` with the same body and the remaining
 `in_flight` count. The backend remains draining after either response. Streams
 that are ineligible for migration follow the warning-plus-error rule, so their
 producer attempts are canceled only after the terminal error is committed.
+When a proxy has an admin token configured, both lower-level drain forms require
+that token as `Authorization: Bearer ...`. This protects the low-level endpoint
+on the shared proxy listener; the operator supplies the credential on its
+downstream fan-out calls.
 
-Managed backend pods receive a `preStop` hook that calls this endpoint through
-the proxy Service. Manual `streamweldctl drain <pod>` resolves the pod backend
-address and invokes the identical operation. Deployments using this protocol
-can use `terminationGracePeriodSeconds: 15`; the hook timeout must leave enough
-time for HTTP completion and process exit.
+In a multi-replica operator deployment, a Pod drain MUST use the operator's
+all-replica barrier instead of a load-balanced proxy Service:
+
+```http
+POST /internal/backends/by-pod/{namespace}/{pod}/drain HTTP/1.1
+```
+
+The operator discovers every non-terminating proxy EndpointSlice member,
+including temporarily NotReady members which may still own streams, and sends
+the same Pod drain to each replica directly. It returns `200 OK` only after
+every discovered proxy acknowledges zero local in-flight streams:
+
+```json
+{
+  "pod_namespace": "models",
+  "pod_name": "vllm-0",
+  "proxy_count": 2,
+  "in_flight": 0,
+  "state": "drained"
+}
+```
+
+An empty proxy discovery result or any failed acknowledgement is fail-closed
+with `503 Service Unavailable`. A completed fan-out with remaining streams is
+`504 Gateway Timeout` and reports the aggregate `in_flight` count. Marks already
+accepted by individual replicas remain draining, and retrying the barrier is
+safe. The operator listener has no application bearer token because Kubernetes
+HTTP lifecycle hooks cannot add one; it MUST remain isolated by namespace
+NetworkPolicy and MUST NOT be publicly exposed.
+
+Managed backend pods receive a `preStop` hook that calls the operator Service.
+Manual `streamweldctl drain --namespace <namespace> <pod>` calls the identical
+barrier. Deployments using this protocol can use
+`terminationGracePeriodSeconds: 15`; the hook timeout must leave enough time
+for HTTP completion and process exit.
 
 Draining the proxy itself is distinct: readiness turns false, no new streams
 are accepted, existing producer attempts are allowed to finish, and downstream
@@ -929,6 +963,35 @@ not initiated merely because a proxy is gracefully shutting down.
 `/internal/*` is an administrative surface and SHOULD be bound or network
 restricted separately from public inference endpoints. Protocol v1 does not
 define end-user authentication, tenant isolation, billing, or RBAC.
+
+### 13.1 Operator route snapshots
+
+The operator programs every proxy replica without restarting it through:
+
+```http
+PUT /internal/routes/{percent-encoded-namespace/name}/backends HTTP/1.1
+Authorization: Bearer <release-scoped-token>
+Content-Type: application/json
+```
+
+The body is one bounded, strict JSON object containing `model`, the Kubernetes
+object `uid`, `observed_generation`, `deleted`, the complete durability
+`policy`, and the complete admitted `backends` set. Each backend carries its
+immutable ID, HTTP origin URL, model version, template verdict, and Pod
+identity. The response reports the applied generation, current serving backend
+count, draining backend count, a bounded complete list of draining backend
+identities when it fits, and active stream count. The operator requires the
+serving count to agree, unions available draining identities (with a bounded
+count fallback for mixed versions), and sums replica-local active streams.
+
+Updates are atomic per proxy. A lower generation is rejected. An exact
+same-generation retry is idempotent, while changed EndpointSlice content at
+the same route generation replaces the snapshot. A different UID cannot take
+over a live name. Deletion sends a UID- and generation-fenced empty tombstone
+to every non-terminating proxy before the route finalizer is removed; only then
+may a recreated object with a new UID claim the name. Backend records removed
+from a snapshot stop receiving new leases immediately but remain accounted as
+draining until their retained leases reach zero.
 
 ## 14. Observability contract
 

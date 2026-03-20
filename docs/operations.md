@@ -2,26 +2,81 @@
 
 ## Draining inference backends
 
-Register backends by their canonical `host:port` identity. To exclude one from
-new selection, proactively migrate its durable streams, and wait for every
-lease to leave it, call:
+In an operator deployment, drain by Kubernetes Pod identity through the
+operator's namespace-private barrier. It discovers every non-terminating proxy
+replica, excludes the Pod's backend records from each local pool, triggers
+migration for every owner, and waits for the aggregate in-flight count to reach
+zero. For a local administrative session, port-forward the drain Service and
+use the CLI:
 
 ```sh
-curl --fail-with-body -X POST \
-  'http://streamweld:8080/internal/backends/10.0.0.12%3A8000/drain?timeout=10s'
+kubectl -n streamweld-system port-forward \
+  service/streamweld-operator 8082:8082
+
+streamweldctl drain \
+  --endpoint http://127.0.0.1:8082 \
+  --namespace models \
+  vllm-llama-8b-0
 ```
 
-`200 OK` means `in_flight` reached zero. `504 Gateway Timeout` reports the
-remaining count and deliberately leaves the backend in the draining state.
-Repeating the request is safe. A stream that cannot be continued receives its
-verbose refusal warning followed by a terminal error; the backend lease is not
-released before that error is committed.
+The equivalent HTTP path is
+`POST /internal/backends/by-pod/{namespace}/{pod}/drain` on operator port 8082.
+`200 OK` means every proxy acknowledged `in_flight: 0`. `504 Gateway Timeout`
+reports an aggregate remaining count; `503 Service Unavailable` means endpoint
+discovery or at least one proxy acknowledgement failed. All successful local
+marks remain draining after either response, and repeating the request is
+safe. Do not send an HA pre-stop request to the proxy ClusterIP: Kubernetes
+will select one process and leave other replica-local leases untouched.
+
+For a standalone single proxy, the lower-level
+`POST /internal/backends/{percent-encoded-id}/drain?timeout=10s` and
+`POST /internal/backends/by-pod/{namespace}/{pod}/drain?timeout=10s` endpoints
+remain available. They require the proxy admin bearer token whenever one is
+configured; the Helm operator supplies it automatically. A stream that cannot
+be continued receives its verbose
+refusal warning followed by a terminal error; its lease is not released before
+that error is committed.
 
 The pre-stop budget must cover the drain request and ordinary process exit.
 With Streamweld, set `terminationGracePeriodSeconds: 15`, not 300. The Helm
-hook and reproducible rollout measurements are maintained with the operator
-and chaos harness; deployment documentation does not publish an unmeasured
+hook calls the operator barrier. The drain listener is intentionally
+unauthenticated because Kubernetes HTTP lifecycle hooks cannot attach a bearer
+token. Keep the chart NetworkPolicy enabled and do not expose port 8082 outside
+the trusted namespace. Operator-to-proxy drain fan-out is bearer authenticated.
+Reproducible rollout measurements are maintained with
+the chaos harness; deployment documentation does not publish an unmeasured
 savings number.
+
+## Kubernetes operator and route programming
+
+An `InferenceRoute` selects namespaced backend Pods, binds an exact model name,
+and references a namespaced `DurabilityPolicy`. The operator watches Pods and
+EndpointSlices, runs the four conformance probes before admission, and pushes a
+complete model/backend/policy snapshot directly to every proxy Pod. Route
+status contains the aggregate verdict and counters plus bounded per-backend
+cache metadata. Probe cache reuse requires an exact
+`(imageDigest, model, tokenizerHash)` match.
+
+The route admin mutation endpoint is bearer authenticated. The Helm chart
+generates or mounts one release-scoped token into the operator and proxies.
+Snapshots include Kubernetes UID and generation fences; route deletion blocks
+on an all-replica tombstone before its finalizer is removed. A proxy
+EndpointSlice change requeues every route, which repopulates a restarted or
+newly scaled replica. Keep the operator's leader election enabled in HA
+clusters.
+
+The optional mutating webhook adds the pod-identity pre-stop hook and sets
+`terminationGracePeriodSeconds: 15` on the first container of a selected Pod.
+It refuses to replace an existing, different pre-stop hook. Leave
+`webhook.enabled=false` and add the hook yourself when a workload already owns
+container lifecycle actions. Enabling the webhook requires a serving
+certificate and CA bundle (or the chart's cert-manager integration).
+
+The chart refuses unsafe layouts: memory journals cannot scale beyond one
+proxy, Redis mode must have a Redis URL source, relay mode must have TLS
+material, and the unauthenticated drain listener requires the namespace
+NetworkPolicy. See `deploy/helm/streamweld/README.md` for install profiles and
+`deploy/samples/` for a deterministic CPU-only route.
 
 ## Proxy shutdown
 
