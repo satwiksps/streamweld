@@ -3,3 +3,6 @@ packages:
   - "packages/*"
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@ai-sdk/gateway@2.0.139'
+  - ai@5.0.244

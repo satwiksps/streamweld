@@ -8,4 +8,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: false,
+  external: ["@streamweld/client", "ai"],
 });
