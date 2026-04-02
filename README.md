@@ -76,6 +76,29 @@ Drain one registered backend and wait for its leases to reach zero:
 curl -X POST 'http://127.0.0.1:8080/internal/backends/127.0.0.1%3A8000/drain?timeout=10s'
 ```
 
+## TypeScript clients
+
+`@streamweld/client` keeps one async iterable alive across transport failures
+and exposes independent typed-event and text views:
+
+```ts
+import { createDurableStream } from "@streamweld/client";
+
+const stream = createDurableStream({
+  url: "http://127.0.0.1:8080/v1/chat/completions",
+  body: { model: "your-model", messages, stream: true },
+});
+
+for await (const delta of stream.text) render(delta);
+```
+
+`await stream.stop()` explicitly cancels generation. An `AbortSignal` only
+detaches the local reader and leaves the identified generation resumable.
+`@streamweld/ai-sdk` implements Vercel AI SDK v5 `ChatTransport`, allowing a
+`useChat` app to switch its transport while retaining durable cursor resume.
+See [`docs/client.md`](docs/client.md) for typed outcomes, persistence, exact
+`uint64` cursor handling, and the adapter contract.
+
 ## Kubernetes operator
 
 Install the single-replica memory profile and apply the deterministic CPU-only
