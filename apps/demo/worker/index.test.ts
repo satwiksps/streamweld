@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDurableStream, LocalAbortError, type StreamEvent } from "@streamweld/client";
-import worker, { resetDemoStateForTests } from "./index.js";
+import { createTestWorker } from "./index.js";
 
 interface TestContext {
   readonly pending: Promise<unknown>[];
   readonly context: ExecutionContext;
 }
 
+let worker: ReturnType<typeof createTestWorker>;
+
 describe("demo worker", () => {
   beforeEach(() => {
-    resetDemoStateForTests();
+    worker = createTestWorker();
     vi.useFakeTimers();
   });
 
@@ -38,6 +40,34 @@ describe("demo worker", () => {
     expect(body).toContain("event: streamweld.stream.done");
     expect(body).toContain("Durable ");
     expect(body).not.toContain("data: [DONE]");
+    await Promise.all(harness.pending);
+  });
+
+  it("releases journal entries before the producer reaches a terminal event", async () => {
+    const harness = testContext();
+    const response = await dispatch(
+      new Request("https://demo.test/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model: "llama-3.1-8b" }),
+      }),
+      harness,
+    );
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    let firstReadResolved = false;
+    const firstRead = reader!.read().then((result) => {
+      firstReadResolved = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(150);
+    await Promise.resolve();
+    expect(firstReadResolved).toBe(true);
+    const first = await firstRead;
+    expect(new TextDecoder().decode(first.value)).toContain("event: streamweld.stream.open");
+
+    await reader!.cancel();
+    await vi.runAllTimersAsync();
     await Promise.all(harness.pending);
   });
 

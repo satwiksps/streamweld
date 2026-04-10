@@ -10,6 +10,7 @@
     "build": "vite build",
     "dev": "vite",
     "preview": "vite preview",
+    "smoke": "node scripts/smoke.mjs",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --project tsconfig.json"
   },
