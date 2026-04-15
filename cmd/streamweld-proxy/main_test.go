@@ -102,6 +102,29 @@ func TestParseLogLevel(t *testing.T) {
 	}
 }
 
+func TestOTLPTraceEnvironmentSelection(t *testing.T) {
+	t.Parallel()
+	lookup := mapEnvironment(map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT":        "https://collector.example.test",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "https://traces.example.test/v1/traces",
+		"OTEL_SDK_DISABLED":                  "TRUE",
+	})
+	if got := otlpTraceEndpoint(lookup); got != "https://traces.example.test/v1/traces" {
+		t.Errorf("trace endpoint = %q", got)
+	}
+	if !otelSDKDisabled(lookup) {
+		t.Error("case-insensitive OTEL_SDK_DISABLED=true was ignored")
+	}
+	if got := otlpTraceEndpoint(mapEnvironment(map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.example.test/otel/",
+	})); got != "https://collector.example.test/otel/v1/traces" {
+		t.Errorf("generic OTLP trace endpoint = %q", got)
+	}
+	if got := otlpTraceEndpoint(mapEnvironment(nil)); got != "" {
+		t.Errorf("unset trace endpoint = %q", got)
+	}
+}
+
 func TestShutdownContextRestoresSignalHandlingBeforeCancellation(t *testing.T) {
 	t.Parallel()
 	var subscription chan<- os.Signal

@@ -19,6 +19,9 @@ import (
 	"github.com/streamweld/streamweld/internal/journal"
 	"github.com/streamweld/streamweld/internal/migrate"
 	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/streamweld/streamweld/internal/telemetry"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const maxUpstreamErrorBytes = 64 << 10
@@ -45,6 +48,7 @@ type durableService struct {
 	routes      *routeBackendRegistry
 	relay       *relayCoordinator
 	owner       *journal.OwnerRecord
+	telemetry   *telemetry.Recorder
 
 	streams           sync.Map // journal.StreamID -> *streamRuntime
 	active            sync.WaitGroup
@@ -55,6 +59,7 @@ type durableService struct {
 type streamRuntime struct {
 	service         *durableService
 	id              journal.StreamID
+	route           string
 	model           string
 	policy          streamPolicy
 	endpoint        string
@@ -100,6 +105,15 @@ type streamRuntime struct {
 	degraded                bool
 	activeDone              sync.Once
 	firstOnce               sync.Once
+	telemetryDone           sync.Once
+	spanDone                sync.Once
+	span                    trace.Span
+	telemetryOutcome        string
+	telemetryUsage          tokenUsage
+	telemetryFinishReason   string
+	journalBytes            int64
+	lastTextAt              time.Time
+	attemptPromptObserved   uint64
 
 	degradationMarkerOnce      sync.Once
 	degradationTerminalOnce    sync.Once
@@ -138,6 +152,7 @@ func newDurableService(
 	idempotency journal.IdempotencyRegistry,
 	logger *slog.Logger,
 	backends *backend.Pool,
+	recorder *telemetry.Recorder,
 ) *durableService {
 	return &durableService{
 		rootContext: rootContext,
@@ -149,6 +164,7 @@ func newDurableService(
 		idempotency: idempotency,
 		logger:      logger,
 		backends:    backends,
+		telemetry:   recorder,
 	}
 }
 
@@ -160,6 +176,8 @@ func (s *durableService) resolve(
 ) (streamResolution, error) {
 	waitContext, cancelWait := context.WithTimeout(request.Context(), s.config.ReadinessTimeout)
 	defer cancelWait()
+	route := s.routeForModel(normalized.Model)
+	labels := telemetry.Labels{Route: route, Model: normalized.Model}
 
 	for {
 		if err := waitContext.Err(); err != nil {
@@ -179,7 +197,7 @@ func (s *durableService) resolve(
 				policy.JournalTTL,
 			)
 			if resolveErr != nil {
-				s.logDegraded(request, "idempotency resolution failed", resolveErr)
+				s.logDegraded(request, id, labels, "idempotency resolution failed", resolveErr)
 				return s.resolveDegraded(id, normalized.Model)
 			}
 			digestValue := binding.Digest
@@ -204,14 +222,14 @@ func (s *durableService) resolve(
 					}
 					continue
 				} else if !errors.Is(stateErr, journal.ErrExpired) {
-					s.logDegraded(request, "idempotent journal lookup failed", stateErr)
+					s.logDegraded(request, id, labels, "idempotent journal lookup failed", stateErr)
 					return s.resolveDegraded(id, normalized.Model)
 				}
 				_, removeErr := s.removeIdempotencyIfBound(
 					waitContext, binding.Digest, binding.ID,
 				)
 				if removeErr != nil {
-					s.logDegraded(request, "stale idempotency cleanup failed", removeErr)
+					s.logDegraded(request, id, labels, "stale idempotency cleanup failed", removeErr)
 					return s.resolveDegraded(id, normalized.Model)
 				}
 				// Resolve again whether this caller removed the stale binding or
@@ -251,25 +269,33 @@ func (s *durableService) resolve(
 				lease.Release()
 				continue
 			}
-			s.logDegraded(request, "durable journal unavailable", err)
-			return streamResolution{degraded: true, degradedLease: lease}, nil
+			s.logDegraded(request, id, labels, "durable journal unavailable", err)
+			return streamResolution{id: id, degraded: true, degradedLease: lease}, nil
 		}
+		s.telemetry.JournalDegraded(labels, id.String(), false)
 		stopPendingLease()
 
-		producerContext, cancel := context.WithCancelCause(s.rootContext)
 		openPayload, marshalErr := marshalOpenPayload(id, meta)
 		if marshalErr != nil {
-			cancel(marshalErr)
 			lease.Release()
 			if digest != nil {
 				_, _ = s.removeIdempotencyIfBound(s.rootContext, *digest, id)
 			}
 			return streamResolution{}, marshalErr
 		}
+		operation := operationForEndpoint(request.URL.Path)
+		parentContext := propagation.TraceContext{}.Extract(
+			request.Context(), propagation.HeaderCarrier(request.Header),
+		)
+		_, span := s.telemetry.StartStream(
+			context.WithoutCancel(parentContext), id.String(), labels, operation,
+		)
+		producerContext, cancel := context.WithCancelCause(trace.ContextWithSpan(s.rootContext, span))
 		structured, _ := migrate.IsStructuredRequest(normalized.Body)
 		runtime := &streamRuntime{
 			service:                    s,
 			id:                         id,
+			route:                      route,
 			model:                      normalized.Model,
 			policy:                     policy,
 			endpoint:                   request.URL.Path,
@@ -293,10 +319,20 @@ func (s *durableService) resolve(
 			degradationTerminalAttempt: make(chan struct{}),
 			stopWait:                   make(chan struct{}),
 			lastSeq:                    1,
+			span:                       span,
+			journalBytes:               int64(len(normalized.Body) + len(openPayload)),
 		}
 		runtime.openEntry = journal.Entry{Seq: 1, Kind: journal.KindOpen, Payload: openPayload}
 		s.active.Add(1)
+		s.telemetry.StreamStarted(labels)
+		s.telemetry.AddJournalBytes(labels, runtime.journalBytes)
 		s.streams.Store(id, runtime)
+		s.logger.InfoContext(request.Context(), "durable stream opened",
+			"stream_id", id,
+			"route", route,
+			"model", normalized.Model,
+			"backend_id", selected.ID,
+		)
 		if digest != nil {
 			go runtime.maintainIdempotencyLease()
 		}
@@ -312,7 +348,7 @@ func (s *durableService) resolveDegraded(id journal.StreamID, model string) (str
 	if err != nil {
 		return streamResolution{}, fmt.Errorf("select degraded backend: %w", err)
 	}
-	return streamResolution{degraded: true, degradedLease: lease}, nil
+	return streamResolution{id: id, degraded: true, degradedLease: lease}, nil
 }
 
 func (s *durableService) acquireBackend(
@@ -333,6 +369,26 @@ func (s *durableService) policyForModel(model string) streamPolicy {
 		}
 	}
 	return streamPolicyFromConfig(s.config)
+}
+
+func (s *durableService) routeForModel(model string) string {
+	if s.routes != nil {
+		if route, ok := s.routes.routeForModel(model); ok {
+			return route
+		}
+	}
+	return telemetry.DefaultRoute
+}
+
+func operationForEndpoint(endpoint string) string {
+	if endpoint == "/v1/completions" {
+		return "text_completion"
+	}
+	return "chat"
+}
+
+func (r *streamRuntime) telemetryLabels() telemetry.Labels {
+	return telemetry.Labels{Route: r.route, Model: r.model}
 }
 
 func (s *durableService) start(runtime *streamRuntime, rawQuery string) (*upstreamRejection, error) {
@@ -375,6 +431,7 @@ func (r *streamRuntime) appendChunk(event sse.Event, observation chunkObservatio
 			r.finishReason = observation.FinishReason
 		}
 		r.mu.Unlock()
+		r.recordAcceptedChunk(observation)
 		_ = r.degradedFeed.append(r.context, degradedChunkFrame(event))
 		return nil
 	}
@@ -393,6 +450,7 @@ func (r *streamRuntime) appendChunk(event sse.Event, observation chunkObservatio
 			r.finishReason = observation.FinishReason
 		}
 		r.mu.Unlock()
+		r.recordAcceptedChunk(observation)
 		r.enterJournalDegradedLocked(err, degradedChunkFrame(event))
 		return nil
 	}
@@ -403,12 +461,117 @@ func (r *streamRuntime) appendChunk(event sse.Event, observation chunkObservatio
 		r.finishReason = observation.FinishReason
 	}
 	r.mu.Unlock()
+	r.recordAcceptedChunk(observation)
+	r.recordJournalCommit(int64(len(payload)))
 	committed := journal.Entry{Seq: seq, Kind: journal.KindChunk, Payload: payload}
 	if err := r.degradedFeed.publishCommitted(r.context, committed); err != nil {
 		return err
 	}
 	r.publishFirst(committed)
 	return nil
+}
+
+func (r *streamRuntime) recordAcceptedChunk(observation chunkObservation) {
+	now := time.Now().UTC()
+	var ttft, inter time.Duration
+	var recordTTFT, recordInter bool
+	var promptDelta uint64
+	r.mu.Lock()
+	if observation.Usage != nil && r.migrationsUsed != 0 &&
+		observation.Usage.PromptTokens > r.attemptPromptObserved {
+		promptDelta = observation.Usage.PromptTokens - r.attemptPromptObserved
+		r.attemptPromptObserved = observation.Usage.PromptTokens
+	}
+	if observation.TextDelta != "" {
+		if r.lastTextAt.IsZero() {
+			ttft = now.Sub(r.createdAt)
+			recordTTFT = true
+		} else {
+			inter = now.Sub(r.lastTextAt)
+			recordInter = true
+		}
+		r.lastTextAt = now
+	}
+	r.mu.Unlock()
+	labels := r.telemetryLabels()
+	if promptDelta != 0 {
+		r.service.telemetry.PromptTokensRebilled(labels, promptDelta)
+	}
+	if recordTTFT {
+		r.service.telemetry.TTFT(labels, ttft)
+	}
+	if recordInter {
+		r.service.telemetry.InterToken(labels, inter)
+	}
+}
+
+func (r *streamRuntime) recordJournalCommit(bytes int64) {
+	if bytes < 0 {
+		return
+	}
+	if bytes != 0 {
+		r.mu.Lock()
+		r.journalBytes += bytes
+		r.mu.Unlock()
+		r.service.telemetry.AddJournalBytes(r.telemetryLabels(), bytes)
+	}
+	r.service.telemetry.JournalDegraded(r.telemetryLabels(), r.id.String(), false)
+}
+
+func (r *streamRuntime) recordTerminal(kind journal.EntryKind) {
+	r.telemetryDone.Do(func() {
+		outcome := "error"
+		switch kind {
+		case journal.KindDone:
+			outcome = "done"
+		case journal.KindStopped:
+			outcome = "stopped"
+		}
+		r.mu.Lock()
+		r.telemetryOutcome = outcome
+		_, r.telemetryUsage = r.progress.Snapshot()
+		r.telemetryFinishReason = r.finishReason
+		r.mu.Unlock()
+		r.service.telemetry.StreamFinished(
+			r.telemetryLabels(), r.id.String(), outcome, time.Since(r.createdAt),
+		)
+	})
+}
+
+func (r *streamRuntime) endProducerSpan() {
+	r.spanDone.Do(func() {
+		r.mu.Lock()
+		outcome := r.telemetryOutcome
+		usage := r.telemetryUsage
+		finishReason := r.telemetryFinishReason
+		r.mu.Unlock()
+		if outcome == "" {
+			outcome = "error"
+		}
+		r.service.telemetry.EndStream(
+			r.span,
+			outcome,
+			usage.PromptTokens,
+			usage.CompletionTokens,
+			usage.Estimated,
+			finishReason,
+		)
+	})
+}
+
+func (r *streamRuntime) scheduleRetentionExpiry() {
+	time.AfterFunc(r.policy.JournalTTL, func() {
+		if !r.service.streams.CompareAndDelete(r.id, r) {
+			return
+		}
+		r.mu.Lock()
+		retained := r.journalBytes
+		r.journalBytes = 0
+		r.mu.Unlock()
+		if retained != 0 {
+			r.service.telemetry.AddJournalBytes(r.telemetryLabels(), -retained)
+		}
+	})
 }
 
 func (r *streamRuntime) finishDone() error {
@@ -524,6 +687,7 @@ func (r *streamRuntime) closeTerminal(
 		r.enterJournalDegradedLocked(err)
 		return r.finishDegradedLocked(kind, payload, stopResult)
 	}
+	r.recordJournalCommit(int64(len(payload)))
 	r.mu.Lock()
 	r.lastSeq++
 	terminalEntry := journal.Entry{Seq: r.lastSeq, Kind: kind, Payload: payload}
@@ -542,15 +706,14 @@ func (r *streamRuntime) closeTerminal(
 	if lease != nil {
 		lease.Release()
 	}
+	r.recordTerminal(kind)
 	if err := r.degradedFeed.publishCommitted(r.service.rootContext, terminalEntry); err != nil {
 		r.service.logger.Warn("relay committed terminal event", "stream_id", r.id, "error", err)
 	}
 	r.degradedFeed.close()
 	r.publishFirst(terminalEntry)
 	r.refreshIdempotency()
-	time.AfterFunc(r.policy.JournalTTL, func() {
-		r.service.streams.CompareAndDelete(r.id, r)
-	})
+	r.scheduleRetentionExpiry()
 	return nil
 }
 
@@ -912,9 +1075,17 @@ func waitForGroup(ctx context.Context, group *sync.WaitGroup) error {
 	}
 }
 
-func (s *durableService) logDegraded(request *http.Request, message string, err error) {
+func (s *durableService) logDegraded(
+	request *http.Request,
+	id journal.StreamID,
+	labels telemetry.Labels,
+	message string,
+	err error,
+) {
 	s.journalDegraded.Store(1)
+	s.telemetry.JournalDegraded(labels, id.String(), true)
 	s.logger.ErrorContext(request.Context(), message+"; degrading stream",
+		"stream_id", id,
 		"error", err,
 		"backend", safeBackendAddress(s.target),
 	)

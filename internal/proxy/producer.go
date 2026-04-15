@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/streamweld/streamweld/internal/journal"
 	"github.com/streamweld/streamweld/internal/migrate"
 	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type migrationCause struct{ reason string }
@@ -33,6 +35,11 @@ type attemptSpec struct {
 	seamBase         string
 	migrationEntries []journal.Entry
 	estimateWarning  bool
+	migrationReason  string
+	fromBackend      string
+	toBackend        string
+	rescuedTokens    uint64
+	attempt          uint64
 }
 
 type attemptOutcome struct {
@@ -69,6 +76,7 @@ func requestHasMultipleChoices(body []byte) bool {
 }
 
 func (r *streamRuntime) runProducer(rawQuery string, started chan<- producerStartResult) {
+	defer r.endProducerSpan()
 	signaled := false
 	signal := func(result producerStartResult) {
 		if signaled {
@@ -83,6 +91,13 @@ func (r *streamRuntime) runProducer(rawQuery string, started chan<- producerStar
 	for {
 		outcome := r.runAttempt(rawQuery, spec, signal)
 		if outcome.err != nil {
+			if terminalErr := r.finishError(
+				"upstream_error",
+				"the upstream producer failed before the stream could continue",
+				"producer_failure",
+			); terminalErr != nil && !errors.Is(terminalErr, journal.ErrTerminalState) {
+				outcome.err = errors.Join(outcome.err, terminalErr)
+			}
 			signal(producerStartResult{err: outcome.err})
 			return
 		}
@@ -108,12 +123,31 @@ func (r *streamRuntime) runAttempt(
 	rawQuery string,
 	spec attemptSpec,
 	signal func(producerStartResult),
-) attemptOutcome {
+) (outcome attemptOutcome) {
 	r.mu.Lock()
 	selected := r.currentBackend
+	attempt := r.migrationsUsed + 1
 	r.mu.Unlock()
 
-	attemptContext, attemptCancel := context.WithCancelCause(r.context)
+	traceContext, attemptSpan := r.service.telemetry.StartAttempt(
+		r.context,
+		r.telemetryLabels(),
+		operationForEndpoint(r.endpoint),
+		selected.ID.String(),
+		selected.URL.Hostname(),
+		upstreamServerPort(selected.URL.Scheme, selected.URL.Port()),
+		attempt,
+		spec.continuation,
+	)
+	defer func() {
+		trigger := outcome.trigger
+		if outcome.rejection != nil && trigger == "" {
+			trigger = "upstream_rejected"
+		}
+		r.service.telemetry.EndAttempt(attemptSpan, outcome.err, trigger)
+	}()
+
+	attemptContext, attemptCancel := context.WithCancelCause(traceContext)
 	r.mu.Lock()
 	r.attemptCancel = attemptCancel
 	pending := r.pendingTrigger
@@ -158,6 +192,7 @@ func (r *streamRuntime) runAttempt(
 		return attemptOutcome{err: fmt.Errorf("construct upstream request: %w", err)}
 	}
 	request.Header = r.requestHeader.Clone()
+	propagation.TraceContext{}.Inject(attemptContext, propagation.HeaderCarrier(request.Header))
 	request.ContentLength = int64(len(spec.body))
 	request.Host = selected.URL.Host
 
@@ -172,14 +207,14 @@ func (r *streamRuntime) runAttempt(
 	}
 	response, err := client.Do(request)
 	if spec.continuation {
-		if commitErr := r.commitDispatchedAttempt(spec.migrationEntries, spec.estimateWarning); commitErr != nil {
+		if commitErr := r.commitDispatchedAttempt(spec); commitErr != nil {
 			if context.Cause(r.context) == nil {
 				_ = r.finishError("journal_capacity_exceeded", "durable journal could not record migration", "journal_capacity")
 			}
 			if response != nil && response.Body != nil {
 				_ = response.Body.Close()
 			}
-			return attemptOutcome{terminal: true}
+			return attemptOutcome{terminal: true, trigger: "journal_capacity"}
 		}
 		signal(producerStartResult{})
 	}
@@ -198,12 +233,12 @@ func (r *streamRuntime) runAttempt(
 			if closeErr := r.finishError("upstream_error", "upstream rejected the request", "upstream_rejected"); closeErr != nil {
 				return attemptOutcome{err: closeErr}
 			}
-			return attemptOutcome{terminal: true, rejection: &upstreamRejection{status: response.StatusCode, body: body}}
+			return attemptOutcome{terminal: true, trigger: "upstream_rejected", rejection: &upstreamRejection{status: response.StatusCode, body: body}}
 		}
 		if closeErr := r.finishError("upstream_error", "continuation request was rejected", "upstream_rejected"); closeErr != nil {
 			return attemptOutcome{err: closeErr}
 		}
-		return attemptOutcome{terminal: true}
+		return attemptOutcome{terminal: true, trigger: "upstream_rejected"}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.CopyN(io.Discard, response.Body, maxUpstreamErrorBytes)
@@ -216,7 +251,7 @@ func (r *streamRuntime) runAttempt(
 		if closeErr := r.finishError("upstream_error", "upstream response was not an event stream", "invalid_content_type"); closeErr != nil {
 			return attemptOutcome{err: closeErr}
 		}
-		return attemptOutcome{terminal: true}
+		return attemptOutcome{terminal: true, trigger: "invalid_content_type"}
 	}
 
 	decoder, decoderErr := sse.NewDecoderWithOptions(
@@ -242,8 +277,9 @@ func (r *streamRuntime) runAttempt(
 			if spec.continuation {
 				if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
 					r.service.logger.Error("reconcile continuation seam", "stream_id", r.id, "error", err)
+					r.recordMigrationRefusal("unsupported_continuation_shape")
 					_ = r.finishError("migration_refused", "continuation seam could not be reconciled", "unsupported_continuation_shape")
-					return attemptOutcome{terminal: true}
+					return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
 				}
 				signal(producerStartResult{})
 			}
@@ -259,7 +295,7 @@ func (r *streamRuntime) runAttempt(
 			if closeErr := r.finishError("upstream_error", "upstream emitted an invalid chunk", "invalid_chunk"); closeErr != nil {
 				return attemptOutcome{err: errors.Join(observeErr, closeErr)}
 			}
-			return attemptOutcome{terminal: true}
+			return attemptOutcome{terminal: true, trigger: "invalid_chunk"}
 		}
 		if len(observation.ErrorPayload) != 0 {
 			return attemptOutcome{trigger: "error_chunk", passive: true}
@@ -272,8 +308,9 @@ func (r *streamRuntime) runAttempt(
 				continue
 			}
 			if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
+				r.recordMigrationRefusal("unsupported_continuation_shape")
 				_ = r.finishError("migration_refused", "continuation seam could not be reconciled", "unsupported_continuation_shape")
-				return attemptOutcome{terminal: true}
+				return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
 			}
 			frames = nil
 			continuationText = nil
@@ -287,10 +324,27 @@ func (r *streamRuntime) runAttempt(
 				r.service.logger.Error("append durable chunk", "stream_id", r.id, "error", appendErr)
 				_ = r.finishError("journal_capacity_exceeded", "durable journal could not accept a chunk", "journal_capacity")
 			}
-			return attemptOutcome{terminal: true}
+			return attemptOutcome{terminal: true, trigger: "journal_capacity"}
 		}
 		signal(producerStartResult{})
 	}
+}
+
+func upstreamServerPort(scheme, value string) int {
+	if value != "" {
+		port, err := strconv.Atoi(value)
+		if err == nil && port > 0 && port <= 65535 {
+			return port
+		}
+		return 0
+	}
+	if scheme == "https" {
+		return 443
+	}
+	if scheme == "http" {
+		return 80
+	}
+	return 0
 }
 
 func (r *streamRuntime) outcomeForAttemptError(
@@ -377,6 +431,7 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 			targetLease.Release()
 		}
 		r.service.logger.Error("evaluate migration policy", "stream_id", r.id, "error", eligibilityErr)
+		r.recordMigrationRefusal("invalid_policy")
 		_ = r.finishError("migration_refused", "migration policy could not be evaluated", "invalid_policy")
 		return attemptSpec{}, false
 	}
@@ -423,6 +478,7 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 	})
 	if marshalErr != nil {
 		targetLease.Release()
+		r.recordMigrationRefusal("unsupported_continuation_shape")
 		_ = r.finishError("migration_refused", "migration metadata could not be encoded", "unsupported_continuation_shape")
 		return attemptSpec{}, false
 	}
@@ -438,6 +494,11 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 		seamBase:         accumulated,
 		migrationEntries: entries,
 		estimateWarning:  estimateWarning,
+		migrationReason:  reason,
+		fromBackend:      failedBackend.ID.String(),
+		toBackend:        target.ID.String(),
+		rescuedTokens:    usage.CompletionTokens,
+		attempt:          migrationsUsed + 2,
 	}, true
 }
 
@@ -482,19 +543,40 @@ func (r *streamRuntime) markAttemptDispatched() bool {
 	}
 	r.migrationsUsed++
 	r.progress.BeginAttempt()
+	r.attemptPromptObserved = 0
 	return true
 }
 
-func (r *streamRuntime) commitDispatchedAttempt(entries []journal.Entry, estimateWarning bool) error {
-	if err := r.appendNonTerminal(entries); err != nil {
+func (r *streamRuntime) commitDispatchedAttempt(spec attemptSpec) error {
+	if err := r.appendNonTerminal(spec.migrationEntries); err != nil {
 		return err
 	}
-	if estimateWarning {
+	if spec.estimateWarning {
 		r.mu.Lock()
 		r.estimateWarned = true
 		r.mu.Unlock()
 	}
+	r.service.telemetry.Migration(
+		r.telemetryLabels(), metricMigrationReason(spec.migrationReason), spec.rescuedTokens,
+	)
+	r.service.telemetry.RecordMigration(
+		r.span,
+		spec.fromBackend,
+		spec.toBackend,
+		spec.migrationReason,
+		spec.rescuedTokens,
+		spec.attempt,
+	)
 	return nil
+}
+
+func metricMigrationReason(reason string) string {
+	switch reason {
+	case "drain", "stall", "error_chunk", "health":
+		return reason
+	default:
+		return "crash"
+	}
 }
 
 func (r *streamRuntime) refuseMigration(
@@ -502,6 +584,7 @@ func (r *streamRuntime) refuseMigration(
 	predicates []migrate.Predicate,
 	correctness []migrate.CorrectnessFailure,
 ) {
+	r.recordMigrationRefusals(predicates, correctness)
 	entries, reason := buildRefusalEntries(estimateWarning, predicates, correctness)
 	if err := r.appendNonTerminal(entries); err != nil && context.Cause(r.context) == nil {
 		r.service.logger.Error("append migration refusal warnings", "stream_id", r.id, "error", err)
@@ -514,6 +597,25 @@ func (r *streamRuntime) refuseMigration(
 		!errors.Is(err, journal.ErrTerminalState) {
 		r.service.logger.Error("close refused migration", "stream_id", r.id, "error", err)
 	}
+}
+
+func (r *streamRuntime) recordMigrationRefusals(
+	predicates []migrate.Predicate,
+	correctness []migrate.CorrectnessFailure,
+) {
+	for _, predicate := range predicates {
+		r.recordMigrationRefusal(string(predicate))
+	}
+	for _, failure := range correctness {
+		r.recordMigrationRefusal(string(failure))
+	}
+	if len(predicates) == 0 && len(correctness) == 0 {
+		r.recordMigrationRefusal("migration_ineligible")
+	}
+}
+
+func (r *streamRuntime) recordMigrationRefusal(predicate string) {
+	r.service.telemetry.MigrationRefused(r.telemetryLabels(), predicate)
 }
 
 func buildRefusalEntries(
@@ -610,6 +712,7 @@ func (r *streamRuntime) appendNonTerminal(entries []journal.Entry) error {
 		r.mu.Lock()
 		r.lastSeq = seq
 		r.mu.Unlock()
+		r.recordJournalCommit(int64(len(entry.Payload)))
 		if err := r.degradedFeed.publishCommitted(r.context, entry); err != nil {
 			return err
 		}
@@ -643,6 +746,7 @@ func (r *streamRuntime) flushSeam(
 	if err != nil {
 		return err
 	}
+	r.service.telemetry.SeamOverlap(r.telemetryLabels(), result.OverlapBytes)
 	if result.Anomaly {
 		if err := r.appendNonTerminal([]journal.Entry{
 			warningEntry("seam_anomaly", warningMessage("seam_anomaly"), nil),
@@ -824,7 +928,11 @@ func (r *streamRuntime) refuseExternalTriggerIfIneligible(id backend.ID) bool {
 		return false
 	}
 	entries, refusalReason := buildRefusalEntries(estimateWarning, eligibility.Failures, correctness.Failures)
-	return r.closeExternalMigrationRefusal(id, entries, refusalReason, estimateWarning)
+	closed := r.closeExternalMigrationRefusal(id, entries, refusalReason, estimateWarning)
+	if closed {
+		r.recordMigrationRefusals(eligibility.Failures, correctness.Failures)
+	}
+	return closed
 }
 
 func (r *streamRuntime) closeExternalMigrationRefusal(
@@ -857,6 +965,7 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 		r.mu.Lock()
 		r.lastSeq = seq
 		r.mu.Unlock()
+		r.recordJournalCommit(int64(len(entry.Payload)))
 		if relayErr := r.degradedFeed.publishCommitted(r.context, entry); relayErr != nil {
 			r.writeMu.Unlock()
 			r.failTerminalTransition()
@@ -888,6 +997,7 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 		r.failTerminalTransition()
 		return false
 	}
+	r.recordJournalCommit(int64(len(payload)))
 	r.mu.Lock()
 	r.lastSeq++
 	terminal := journal.Entry{Seq: r.lastSeq, Kind: journal.KindError, Payload: payload}
@@ -914,14 +1024,13 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 	// Cancellation happens only after the terminal error is durable.
 	r.cancel(errors.New(reason))
 	lease.Release()
+	r.recordTerminal(journal.KindError)
 	for _, entry := range committed {
 		r.publishFirst(entry)
 	}
 	r.publishFirst(terminal)
 	r.refreshIdempotency()
-	time.AfterFunc(r.policy.JournalTTL, func() {
-		r.service.streams.CompareAndDelete(r.id, r)
-	})
+	r.scheduleRetentionExpiry()
 	return true
 }
 

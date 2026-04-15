@@ -19,6 +19,7 @@ import (
 	"github.com/streamweld/streamweld/internal/backend"
 	"github.com/streamweld/streamweld/internal/conformance"
 	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/streamweld/streamweld/internal/telemetry"
 )
 
 // Option customizes a Server without expanding its core configuration surface.
@@ -31,6 +32,7 @@ type serverOptions struct {
 	ids              StreamIDGenerator
 	idempotency      journal.IdempotencyRegistry
 	backendPool      *backend.Pool
+	telemetry        *telemetry.Recorder
 }
 
 // StreamIDGenerator supplies collision-resistant stream identifiers.
@@ -107,6 +109,19 @@ func WithBackendPool(pool *backend.Pool) Option {
 	}
 }
 
+// WithTelemetry supplies a Prometheus registry and OpenTelemetry tracer. The
+// default recorder owns a private Prometheus registry and uses the process-wide
+// OpenTelemetry tracer provider.
+func WithTelemetry(recorder *telemetry.Recorder) Option {
+	return func(options *serverOptions) error {
+		if recorder == nil {
+			return errors.New("telemetry recorder cannot be nil")
+		}
+		options.telemetry = recorder
+		return nil
+	}
+}
+
 // Server is an OpenAI-compatible passthrough proxy with graceful lifecycle
 // management. Its Handler can be embedded in an existing HTTP server for tests.
 type Server struct {
@@ -151,6 +166,12 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 	}
 	if settings.transport == nil {
 		settings.transport = newTransport(config)
+	}
+	if settings.telemetry == nil {
+		settings.telemetry, err = telemetry.New(nil, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create telemetry recorder: %w", err)
+		}
 	}
 	if settings.backendPool == nil {
 		poolConfig := backend.DefaultConfig()
@@ -236,6 +257,7 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		settings.idempotency,
 		logger,
 		settings.backendPool,
+		settings.telemetry,
 	)
 	if settings.readinessChecker == nil {
 		settings.readinessChecker = newBackendPoolReadinessChecker(

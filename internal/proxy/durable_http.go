@@ -11,8 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/streamweld/streamweld/internal/backend"
 	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/streamweld/streamweld/internal/telemetry"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 const (
@@ -73,10 +77,11 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 	if resolution.degraded {
 		degradedBackend := resolution.degradedLease.Backend()
 		defer resolution.degradedLease.Release()
+		writer.Header().Set(headerStreamID, resolution.id.String())
 		writer.Header().Set(headerDurability, durabilityDegraded)
 		restoreRequestBody(request, normalized.Body)
 		stripStreamweldHeaders(request.Header)
-		h.proxyTo(writer, request, degradedBackend.URL)
+		h.serveDegradedCompletion(writer, request, resolution.id, normalized.Model, degradedBackend)
 		return
 	}
 
@@ -123,6 +128,126 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 	}
 	defer detach()
 	h.serveInitialJournal(writer, request, resolution.runtime, subscription, verbose)
+}
+
+func (h *Handler) serveDegradedCompletion(
+	writer http.ResponseWriter,
+	request *http.Request,
+	id journal.StreamID,
+	model string,
+	selected backend.State,
+) {
+	labels := telemetry.Labels{Route: h.durable.routeForModel(model), Model: model}
+	startedAt := time.Now().UTC()
+	h.durable.telemetry.StreamStarted(labels)
+	parentContext := propagation.TraceContext{}.Extract(
+		request.Context(), propagation.HeaderCarrier(request.Header),
+	)
+	streamContext, streamSpan := h.durable.telemetry.StartStream(
+		parentContext, id.String(), labels, operationForEndpoint(request.URL.Path),
+	)
+	attemptContext, attemptSpan := h.durable.telemetry.StartAttempt(
+		streamContext,
+		labels,
+		operationForEndpoint(request.URL.Path),
+		selected.ID.String(),
+		selected.URL.Hostname(),
+		upstreamServerPort(selected.URL.Scheme, selected.URL.Port()),
+		1,
+		false,
+	)
+	request = request.WithContext(attemptContext)
+	propagation.TraceContext{}.Inject(attemptContext, propagation.HeaderCarrier(request.Header))
+
+	lastBodyAt := time.Time{}
+	observed := &degradedTelemetryResponseWriter{
+		ResponseWriter: writer,
+		onBody: func(now time.Time) {
+			if lastBodyAt.IsZero() {
+				h.durable.telemetry.TTFT(labels, now.Sub(startedAt))
+			} else {
+				h.durable.telemetry.InterToken(labels, now.Sub(lastBodyAt))
+			}
+			lastBodyAt = now
+		},
+	}
+	defer func() {
+		panicValue := recover()
+		outcome := "done"
+		var attemptErr error
+		switch {
+		case panicValue != nil:
+			outcome = "error"
+			attemptErr = fmt.Errorf("upstream response aborted: %v", panicValue)
+		case request.Context().Err() != nil:
+			outcome = "error"
+			attemptErr = request.Context().Err()
+		case observed.StatusCode() >= http.StatusBadRequest:
+			outcome = "error"
+			attemptErr = fmt.Errorf("upstream response status %d", observed.StatusCode())
+		}
+		h.durable.telemetry.EndAttempt(attemptSpan, attemptErr, "")
+		h.durable.telemetry.StreamFinished(labels, id.String(), outcome, time.Since(startedAt))
+		h.durable.telemetry.EndStream(streamSpan, outcome, 0, 0, true, "")
+		h.durable.logger.InfoContext(request.Context(), "degraded stream completed",
+			"stream_id", id,
+			"route", labels.Route,
+			"model", labels.Model,
+			"outcome", outcome,
+		)
+		if panicValue != nil {
+			panic(panicValue)
+		}
+	}()
+	h.proxyToWithLogger(
+		observed,
+		request,
+		selected.URL,
+		h.durable.logger.With("stream_id", id),
+	)
+}
+
+type degradedTelemetryResponseWriter struct {
+	http.ResponseWriter
+
+	mu         sync.Mutex
+	statusCode int
+	onBody     func(time.Time)
+}
+
+func (writer *degradedTelemetryResponseWriter) WriteHeader(statusCode int) {
+	writer.mu.Lock()
+	if writer.statusCode == 0 {
+		writer.statusCode = statusCode
+	}
+	writer.mu.Unlock()
+	writer.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (writer *degradedTelemetryResponseWriter) Write(payload []byte) (int, error) {
+	writer.mu.Lock()
+	if writer.statusCode == 0 {
+		writer.statusCode = http.StatusOK
+	}
+	if len(payload) != 0 && writer.onBody != nil {
+		writer.onBody(time.Now().UTC())
+	}
+	writer.mu.Unlock()
+	return writer.ResponseWriter.Write(payload)
+}
+
+func (writer *degradedTelemetryResponseWriter) StatusCode() int {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.statusCode == 0 {
+		return http.StatusOK
+	}
+	return writer.statusCode
+}
+
+// Unwrap lets http.ResponseController retain streaming features such as Flush.
+func (writer *degradedTelemetryResponseWriter) Unwrap() http.ResponseWriter {
+	return writer.ResponseWriter
 }
 
 func (h *Handler) handleStreamRoute(writer http.ResponseWriter, request *http.Request) {
@@ -263,6 +388,18 @@ func (h *Handler) serveLocalJournal(
 		return
 	}
 	defer cancel()
+	labels := telemetry.Labels{Route: h.durable.routeForModel(state.Model), Model: state.Model}
+	degraded := false
+	if runtime != nil {
+		labels = runtime.telemetryLabels()
+		runtime.mu.Lock()
+		degraded = runtime.degraded
+		runtime.mu.Unlock()
+	}
+	if !degraded {
+		h.durable.telemetry.JournalDegraded(labels, id.String(), false)
+	}
+	h.durable.telemetry.Resume(labels, "client")
 
 	writer.Header().Set(headerStreamID, id.String())
 	writer.Header().Set(headerDurability, durabilityDurable)

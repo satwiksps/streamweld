@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/streamweld/streamweld/internal/backend"
+	"github.com/streamweld/streamweld/internal/telemetry"
 )
 
 const immediateFlushInterval = -1
@@ -74,7 +75,16 @@ func newReverseProxy(target *url.URL, transport http.RoundTripper, logger *slog.
 }
 
 func (h *Handler) proxyTo(writer http.ResponseWriter, request *http.Request, target *url.URL) {
-	newReverseProxy(target, h.durable.transport, h.durable.logger).ServeHTTP(writer, request)
+	h.proxyToWithLogger(writer, request, target, h.durable.logger)
+}
+
+func (h *Handler) proxyToWithLogger(
+	writer http.ResponseWriter,
+	request *http.Request,
+	target *url.URL,
+	logger *slog.Logger,
+) {
+	newReverseProxy(target, h.durable.transport, logger).ServeHTTP(writer, request)
 }
 
 func (h *Handler) proxyFromPool(writer http.ResponseWriter, request *http.Request, model string) {
@@ -121,6 +131,11 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			}
 			writeStatus(writer, http.StatusOK, "ready")
 		}
+	case "/metrics":
+		if requireMethod(writer, request, http.MethodGet) {
+			h.durable.refreshBackendMetrics()
+			h.durable.telemetry.Handler().ServeHTTP(writer, request)
+		}
 	case "/v1/chat/completions", "/v1/completions":
 		if requireMethod(writer, request, http.MethodPost) {
 			h.handleCompletion(writer, request)
@@ -136,6 +151,44 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		writeAPIError(writer, http.StatusNotFound, "not_found", "the requested endpoint is not supported")
 	}
+}
+
+func (s *durableService) refreshBackendMetrics() {
+	type sampleKey struct {
+		labels telemetry.Labels
+		state  string
+	}
+	counts := make(map[sampleKey]float64)
+	for _, current := range s.backends.List() {
+		labels := telemetry.Labels{
+			Route: s.routeForModel(current.Model),
+			Model: current.Model,
+		}
+		for _, state := range []string{"healthy", "draining", "quarantined"} {
+			counts[sampleKey{labels: labels, state: state}] += 0
+		}
+		state := ""
+		switch {
+		case current.Draining:
+			state = "draining"
+		case current.Quarantined:
+			state = "quarantined"
+		case current.Health == backend.HealthHealthy:
+			state = "healthy"
+		}
+		if state != "" {
+			counts[sampleKey{labels: labels, state: state}]++
+		}
+	}
+	samples := make([]telemetry.BackendCount, 0, len(counts))
+	for key, count := range counts {
+		samples = append(samples, telemetry.BackendCount{
+			Labels: key.labels,
+			State:  key.state,
+			Count:  count,
+		})
+	}
+	s.telemetry.ReplaceBackends(samples)
 }
 
 func requireMethod(writer http.ResponseWriter, request *http.Request, allowed string) bool {

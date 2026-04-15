@@ -209,6 +209,12 @@ serviceMonitor:
   interval: 30s
   scrapeTimeout: 10s
 
+observability:
+  tracing:
+    # OTLP/HTTP base endpoint, for example http://otel-collector:4318.
+    # Leave empty to keep tracing disabled.
+    otlpEndpoint: ""
+
 grafanaDashboard:
   enabled: false
   labels:

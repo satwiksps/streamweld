@@ -426,6 +426,7 @@ func (r *streamRuntime) enterJournalDegradedLocked(cause error, failed ...degrad
 	r.mu.Unlock()
 
 	r.service.journalDegraded.Store(1)
+	r.service.telemetry.JournalDegraded(r.telemetryLabels(), r.id.String(), true)
 	r.service.logger.Error("journal unavailable after stream open; degrading stream",
 		"stream_id", r.id,
 		"error", cause,
@@ -466,6 +467,7 @@ func (r *streamRuntime) finishDegradedLocked(
 	if lease != nil {
 		lease.Release()
 	}
+	r.recordTerminal(kind)
 	// The producer context was canceled to interrupt the current upstream
 	// attempt, so use the service lifetime while completing the attached reader.
 	if appendErr := r.degradedFeed.append(r.service.rootContext, frame); appendErr != nil && !errors.Is(appendErr, context.Canceled) {
@@ -473,9 +475,7 @@ func (r *streamRuntime) finishDegradedLocked(
 	}
 	r.degradedFeed.close()
 	r.refreshIdempotency()
-	time.AfterFunc(r.policy.JournalTTL, func() {
-		r.service.streams.CompareAndDelete(r.id, r)
-	})
+	r.scheduleRetentionExpiry()
 	return nil
 }
 

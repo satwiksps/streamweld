@@ -8,12 +8,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
+	"path"
+	"strings"
 	"sync"
 	"syscall"
 
 	"github.com/streamweld/streamweld/internal/proxy"
+	"github.com/streamweld/streamweld/internal/telemetry"
+	"github.com/streamweld/streamweld/internal/version"
 )
 
 func main() {
@@ -107,7 +112,34 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 		return 2
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: level}))
-	server, err := proxy.NewServer(config, logger)
+	serverOptions := make([]proxy.Option, 0, 1)
+	traceEndpoint := otlpTraceEndpoint(lookup)
+	if traceEndpoint != "" && !otelSDKDisabled(lookup) {
+		provider, providerErr := telemetry.NewOTLPTraceProvider(
+			context.Background(), traceEndpoint, "streamweld-proxy", version.Version,
+		)
+		if providerErr != nil {
+			logger.Error("configure OTLP tracing", "error", providerErr)
+			return 2
+		}
+		recorder, recorderErr := telemetry.New(nil, nil, provider)
+		if recorderErr != nil {
+			shutdownContext, cancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
+			shutdownErr := provider.Shutdown(shutdownContext)
+			cancel()
+			logger.Error("configure proxy telemetry", "error", errors.Join(recorderErr, shutdownErr))
+			return 2
+		}
+		serverOptions = append(serverOptions, proxy.WithTelemetry(recorder))
+		defer func() {
+			shutdownContext, cancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
+			defer cancel()
+			if shutdownErr := provider.Shutdown(shutdownContext); shutdownErr != nil {
+				logger.Error("flush OTLP tracing", "error", shutdownErr)
+			}
+		}()
+	}
+	server, err := proxy.NewServer(config, logger, serverOptions...)
 	if err != nil {
 		logger.Error("proxy configuration rejected", "error", err)
 		return 2
@@ -125,6 +157,28 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	}
 	_ = stdout // Reserved for command output; operational logs remain on stderr.
 	return 0
+}
+
+func otlpTraceEndpoint(lookup func(string) (string, bool)) string {
+	if value, ok := lookup("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); ok && value != "" {
+		return value
+	}
+	base := envOrDefault(lookup, "OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	if base == "" {
+		return ""
+	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	parsed.Path = path.Join(parsed.Path, "v1/traces")
+	parsed.RawPath = ""
+	return parsed.String()
+}
+
+func otelSDKDisabled(lookup func(string) (string, bool)) bool {
+	value, ok := lookup("OTEL_SDK_DISABLED")
+	return ok && strings.EqualFold(value, "true")
 }
 
 type orphanPolicyValue struct {

@@ -4,42 +4,128 @@
   "graphTooltip": 1,
   "panels": [
     {
-      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "sum(streamweld_streams_active{route=~\"$route\",model=~\"$model\"})", "refId": "A"}],
       "title": "Active streams",
-      "targets": [{"expr": "sum(streamweld_streams_active)", "refId": "A"}],
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}
+      "type": "stat"
     },
     {
-      "type": "stat",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "max(streamweld_journal_degraded{route=~\"$route\",model=~\"$model\"})", "refId": "A"}],
       "title": "Journal degraded",
-      "targets": [{"expr": "max(streamweld_journal_degraded)", "refId": "A"}],
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}
+      "type": "stat"
     },
     {
-      "type": "timeseries",
-      "title": "Migrations",
-      "targets": [{"expr": "sum by (reason) (rate(streamweld_migrations_total[5m]))", "legendFormat": "{{reason}}", "refId": "A"}],
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}
-    },
-    {
-      "type": "timeseries",
-      "title": "Stream outcomes",
-      "targets": [{"expr": "sum by (outcome) (rate(streamweld_streams_total[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}],
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}
-    },
-    {
-      "type": "timeseries",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(increase(streamweld_tokens_rescued_total{route=~\"$route\",model=~\"$model\"}[$__range]))", "refId": "A"}],
       "title": "Tokens rescued",
-      "targets": [{"expr": "sum(rate(streamweld_tokens_rescued_total[5m]))", "refId": "A"}],
-      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}
+      "type": "stat"
+    },
+    {
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "sum(increase(streamweld_prompt_tokens_rebilled_total{route=~\"$route\",model=~\"$model\"}[$__range]))", "refId": "A"}],
+      "title": "Prompt tokens re-billed",
+      "type": "stat"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 5},
+      "targets": [{"expr": "sum by (outcome) (rate(streamweld_streams_total{route=~\"$route\",model=~\"$model\"}[$__rate_interval]))", "legendFormat": "{{outcome}}", "refId": "A"}],
+      "title": "Stream outcomes / second",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 5},
+      "targets": [{"expr": "sum by (reason) (rate(streamweld_migrations_total{route=~\"$route\",model=~\"$model\"}[$__rate_interval]))", "legendFormat": "{{reason}}", "refId": "A"}],
+      "title": "Migrations / second",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 5},
+      "targets": [{"expr": "sum by (predicate) (rate(streamweld_migrations_refused_total{route=~\"$route\",model=~\"$model\"}[$__rate_interval]))", "legendFormat": "{{predicate}}", "refId": "A"}],
+      "title": "Migration refusals / second",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 13},
+      "targets": [{"expr": "sum by (trigger) (rate(streamweld_resumes_total{route=~\"$route\",model=~\"$model\"}[$__rate_interval]))", "legendFormat": "{{trigger}}", "refId": "A"}],
+      "title": "Resumes / second",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 13},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(streamweld_ttft_seconds_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(streamweld_ttft_seconds_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "TTFT",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 13},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(streamweld_inter_token_seconds_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(streamweld_inter_token_seconds_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "Inter-token latency",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 21},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(streamweld_stream_duration_seconds_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(streamweld_stream_duration_seconds_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "Stream duration",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 21},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(streamweld_seam_overlap_bytes_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(streamweld_seam_overlap_bytes_bucket{route=~\"$route\",model=~\"$model\"}[$__rate_interval])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "Seam overlap",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 21},
+      "targets": [{"expr": "sum(streamweld_journal_bytes{route=~\"$route\",model=~\"$model\"})", "refId": "A"}],
+      "title": "Retained journal payload",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 29},
+      "targets": [{"expr": "sum by (route, model, state) (streamweld_backends{route=~\"$route\",model=~\"$model\"})", "legendFormat": "{{route}} / {{model}} / {{state}}", "refId": "A"}],
+      "title": "Backend state",
+      "type": "timeseries"
     }
   ],
+  "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["streamweld", "inference"],
-  "templating": {"list": []},
+  "tags": ["streamweld", "inference", "genai"],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "includeAll": true,
+        "label": "Route",
+        "name": "route",
+        "query": {"query": "label_values(streamweld_streams_total, route)", "refId": "route"},
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "includeAll": true,
+        "label": "Model",
+        "name": "model",
+        "query": {"query": "label_values(streamweld_streams_total{route=~\"$route\"}, model)", "refId": "model"},
+        "type": "query"
+      }
+    ]
+  },
   "time": {"from": "now-1h", "to": "now"},
   "timezone": "browser",
-  "title": "Streamweld",
+  "title": "Streamweld durable streams",
   "uid": "streamweld",
-  "version": 1
+  "version": 2
 }

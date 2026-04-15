@@ -236,6 +236,20 @@ func (registry *routeBackendRegistry) policyForModel(model string) (streamPolicy
 	return streamPolicy{}, false
 }
 
+// routeForModel returns the canonical namespace/name identity used to program
+// a model. Model uniqueness is enforced by combined, so at most one live route
+// can match.
+func (registry *routeBackendRegistry) routeForModel(model string) (string, bool) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	for route, snapshot := range registry.routes {
+		if !snapshot.deleted && snapshot.model == model {
+			return route, true
+		}
+	}
+	return "", false
+}
+
 // acquireModel linearizes request admission with route replacement and
 // deletion. In particular, a deleted model cannot race into the standalone
 // wildcard backend after its dynamic backend set has been retired.

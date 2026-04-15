@@ -29,6 +29,9 @@ data:
   STREAMWELD_ORPHAN_TIMEOUT: {{ .Values.orphan.timeout | quote }}
   STREAMWELD_SHUTDOWN_TIMEOUT: "15s"
   STREAMWELD_ADMIN_TOKEN_FILE: /var/run/secrets/streamweld/admin-token
+  {{- if .Values.observability.tracing.otlpEndpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.observability.tracing.otlpEndpoint | quote }}
+  {{- end }}
   {{- if .Values.relay.enabled }}
   STREAMWELD_RELAY_LISTEN: {{ printf ":%d" (int .Values.relay.port) | quote }}
   STREAMWELD_RELAY_HEARTBEAT_INTERVAL: {{ .Values.relay.heartbeatInterval | quote }}

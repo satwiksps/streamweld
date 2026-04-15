@@ -118,8 +118,8 @@ func TestPreOpenJournalFailureSetsDegradedGauge(t *testing.T) {
 	if got := response.Header.Get(headerDurability); got != durabilityDegraded {
 		t.Fatalf("durability header = %q, want %q", got, durabilityDegraded)
 	}
-	if got := response.Header.Get(headerStreamID); got != "" {
-		t.Fatalf("stream ID header = %q, want omitted", got)
+	if got := response.Header.Get(headerStreamID); got == "" {
+		t.Fatal("degraded generation omitted its stream ID header")
 	}
 	if got := server.durable.journalDegradedValue(); got != 1 {
 		t.Fatalf("journal degraded gauge = %d, want 1", got)

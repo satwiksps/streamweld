@@ -16,6 +16,7 @@
     "redis",
     "relay",
     "serviceMonitor",
+    "observability",
     "grafanaDashboard"
   ],
   "properties": {
@@ -301,6 +302,21 @@
         "labels": {"$ref": "#/definitions/stringMap"},
         "interval": {"$ref": "#/definitions/duration"},
         "scrapeTimeout": {"$ref": "#/definitions/duration"}
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tracing"],
+      "properties": {
+        "tracing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["otlpEndpoint"],
+          "properties": {
+            "otlpEndpoint": {"type": "string", "pattern": "^(|https?://\\S+)$"}
+          }
+        }
       }
     },
     "grafanaDashboard": {
