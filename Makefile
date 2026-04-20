@@ -10,7 +10,7 @@ TFLINT ?= tflint
 GO_TEST_FLAGS ?=
 GO_BUILD_FLAGS ?=
 
-.PHONY: help bootstrap fmt fmt-check lint lint-go lint-ts typecheck vet test test-go test-ts build build-go build-ts ci dev e2e chaos bench demo helm-lint helm-install terraform-validate terraform-lint
+.PHONY: help bootstrap fmt fmt-check lint lint-go lint-ts typecheck vet test test-go test-ts build build-go build-ts ci dev e2e chaos chaos-kind bench bench-check demo helm-lint helm-install terraform-validate terraform-lint
 
 help: ## Show the available targets.
 	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -66,12 +66,17 @@ e2e: ## Run the kind-based end-to-end suite.
 	bash test/e2e/run-kind.sh
 
 chaos: ## Run the deterministic chaos suite.
-	$(GO) test -race ./test/chaos/...
+	$(GO) test $(GO_TEST_FLAGS) ./test/chaos/... -count=1
+
+chaos-kind: ## Provision kind and execute every physical failure injection.
+	bash test/chaos/run-kind.sh
 
 bench: ## Generate and verify committed benchmark reports using the CLI harness.
 	$(GO) run ./cmd/streamweldctl bench
-	test -s benchmarks/results.md
-	test -s benchmarks/results.json
+	$(GO) run ./cmd/streamweldctl bench --verify
+
+bench-check: ## Verify committed benchmark provenance and correctness without re-running timings.
+	$(GO) run ./cmd/streamweldctl bench --verify
 
 demo: ## Start the failure-injection demo.
 	$(PNPM) --filter @streamweld/demo run dev

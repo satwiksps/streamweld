@@ -21,32 +21,30 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6.0.2
-      - id: suite
-        name: Detect the chaos harness
-        shell: bash
-        run: |
-          if test -d test/chaos && find test/chaos -type f -name '*_test.go' -print -quit | grep -q .; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "The chaos harness is not present in this build phase."
-          fi
-      - if: steps.suite.outputs.enabled == 'true'
-        uses: actions/setup-go@v7.0.0
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: false
-      - if: steps.suite.outputs.enabled == 'true'
-        uses: helm/kind-action@v1.14.0
-      - if: steps.suite.outputs.enabled == 'true'
-        run: make chaos
-      - if: steps.suite.outputs.enabled == 'true'
-        run: make bench
-      - if: steps.suite.outputs.enabled == 'true' && always()
+      - uses: helm/kind-action@v1.14.0
+        with:
+          install_only: true
+      - uses: azure/setup-helm@v4.3.1
+        with:
+          version: v4.0.0
+      - run: make chaos GO_TEST_FLAGS=-race
+      - name: Run the non-skippable kind matrix
+        env:
+          STREAMWELD_CHAOS_RESULTS_DIR: ${{ runner.temp }}/streamweld-kind-results
+        run: make chaos-kind
+      - run: make bench-check
+      - run: make bench
+      - if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
           name: benchmark-results
           path: |
             benchmarks/results.md
             benchmarks/results.json
+            ${{ runner.temp }}/streamweld-kind-results/results.md
+            ${{ runner.temp }}/streamweld-kind-results/results.json
           if-no-files-found: error

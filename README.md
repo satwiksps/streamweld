@@ -99,6 +99,30 @@ detaches the local reader and leaves the identified generation resumable.
 See [`docs/client.md`](docs/client.md) for typed outcomes, persistence, exact
 `uint64` cursor handling, and the adapter contract.
 
+<!-- streamweld:benchmarks:start -->
+## Local chaos model (simulation) results
+
+[Open the live failure lab](https://streamweld-failure-lab.satwiksub.chatgpt.site) to compare the durable and direct paths side by side.
+
+This table is generated from [`benchmarks/results.json`](benchmarks/results.json) by `make bench`; edits inside these markers are rejected by `make bench-check`. It reports an in-process model/simulation—not Kubernetes process disruption. The non-skippable nightly [`kind` matrix](.github/workflows/nightly.yml) is the physical failure-injection gate. The committed run is the honestly labelled `deterministic-local` profile, not a kind or GPU claim.
+
+TTFT is a wall-clock p50 from the recorded host. Both paths include the fake backend's 2.000 ms first-token delay, values serialize to 0.001 ms, and CI gates correctness rather than cross-host timing.
+
+| Scenario | Tokens/stream | Started | Completed | Migrated | Rescued tokens | Prompt tokens re-billed | Seam p50/p99 (bytes) | Direct TTFT p50 (ms) | Streamweld TTFT p50 (ms) | Added TTFT p50 (ms) | Correct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|
+| pod-kill | 64 | 8 | 8 | 8 | 175 | 128 | 10/20 | 3.375 | 7.838 | 4.463 | true |
+| rolling-update | 64 | 8 | 8 | 8 | 175 | 128 | 10/20 | 3.375 | 7.838 | 4.463 | true |
+| spot-reclaim | 64 | 8 | 8 | 8 | 175 | 128 | 10/20 | 3.375 | 7.838 | 4.463 | true |
+| backend-oom | 64 | 8 | 8 | 8 | 175 | 128 | 10/20 | 3.375 | 7.838 | 4.463 | true |
+| client-drop | 64 | 8 | 8 | 0 | 0 | 0 | 0/0 | 3.375 | 7.838 | 4.463 | true |
+| explicit-stop | 64 | 8 | 0 | 0 | 0 | 0 | 0/0 | 3.375 | 7.838 | 4.463 | true |
+| redis-down | 64 | 8 | 8 | 0 | 0 | 0 | 0/0 | 3.375 | 7.838 | 4.463 | true |
+| slow-consumer | 64 | 8 | 8 | 0 | 0 | 0 | 0/0 | 3.375 | 7.838 | 4.463 | true |
+| unsafe-template | 64 | 8 | 0 | 0 | 0 | 0 | 0/0 | 3.375 | 7.838 | 4.463 | true |
+
+Full metadata and scenario-specific terminal outcomes are in [`benchmarks/results.md`](benchmarks/results.md).
+<!-- streamweld:benchmarks:end -->
+
 ## Kubernetes operator
 
 Install the single-replica memory profile and apply the deterministic CPU-only

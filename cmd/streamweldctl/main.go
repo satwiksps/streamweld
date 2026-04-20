@@ -37,6 +37,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "bench":
+		return runBench(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
 	case "drain":
@@ -298,6 +300,7 @@ func printUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "Usage: streamweldctl <command> [options]")
 	_, _ = fmt.Fprintln(writer)
 	_, _ = fmt.Fprintln(writer, "Commands:")
+	_, _ = fmt.Fprintln(writer, "  bench    run or verify the reproducible chaos benchmark matrix")
 	_, _ = fmt.Fprintln(writer, "  doctor   probe chat-template continuation conformance")
 	_, _ = fmt.Fprintln(writer, "  drain    drain one backend Pod across every proxy replica")
 }

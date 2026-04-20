@@ -1,0 +1,30 @@
+apiVersion: streamweld.io/v1alpha1
+kind: DurabilityPolicy
+metadata:
+  name: deterministic-chaos
+  namespace: streamweld-system
+spec:
+  maxMigrations: 3
+  maxMigrationTokens: 8192
+  maxStreamDuration: 15m
+  orphanPolicy: continue
+  orphanTimeout: 60s
+  allowCrossVersion: false
+  allowStructuredResume: false
+  seamWindowBytes: 64
+  journalTTL: 10m
+---
+apiVersion: streamweld.io/v1alpha1
+kind: InferenceRoute
+metadata:
+  name: deterministic-chaos
+  namespace: streamweld-system
+spec:
+  model: streamweld/deterministic-chaos
+  backends:
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: streamweld-chaos-backend
+    port: 8000
+  policyRef:
+    name: deterministic-chaos
