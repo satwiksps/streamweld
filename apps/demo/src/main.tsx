@@ -88,7 +88,7 @@ function App() {
   }, []);
 
   const isRunning = !terminalStates.has(status);
-  const canInject = isRunning && streamId !== null && status !== "connecting" && status !== "stopping";
+  const canInject = isRunning && streamId !== null && status !== "stopping";
 
   function addTimeline(item: Omit<TimelineItem, "key">): void {
     setTimeline((current) => [

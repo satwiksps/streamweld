@@ -191,15 +191,20 @@ async function route(
 
   if (request.method === "POST" && url.pathname === "/api/demo/direct") {
     const session = await createSession(await readModel(request), "direct", store);
-    const response = directStreamResponse(session, store);
-    context.waitUntil(produce(session, store));
+    const liveStore = new LiveDemoStore(store);
+    const response = liveStore.response({ "X-Demo-Stream-Id": session.id });
+    context.waitUntil(produce(session, liveStore));
     return response;
   }
 
   if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
     const session = await createSession(await readModel(request), "durable", store);
-    const response = durableStreamResponse(session, 0, store);
-    context.waitUntil(produce(session, store));
+    const liveStore = new LiveDemoStore(store);
+    const response = liveStore.response({
+      "X-Streamweld-Stream-Id": session.id,
+      "X-Streamweld-Durability": "durable",
+    });
+    context.waitUntil(produce(session, liveStore));
     return response;
   }
 
@@ -411,9 +416,10 @@ async function append(
   const sequence = sequenced ? ++session.sequence : null;
   const idLine = sequence === null ? "" : `id: ${String(sequence)}\n`;
   const eventLine = event === "message" ? "" : `event: ${event}\n`;
+  const flushLine = event === "streamweld.stream.open" ? `: ${createFlushPadding()}\n` : "";
   await appendRaw(
     session,
-    `${idLine}${eventLine}data: ${JSON.stringify(data)}\n\n`,
+    `${idLine}${eventLine}${flushLine}data: ${JSON.stringify(data)}\n\n`,
     terminal,
     false,
     store,
@@ -451,10 +457,6 @@ function durableStreamResponse(
     "X-Streamweld-Stream-Id": session.id,
     "X-Streamweld-Durability": "durable",
   });
-}
-
-function directStreamResponse(session: DemoSession, store: DemoStore): Response {
-  return streamResponse(session.id, 0, store, { "X-Demo-Stream-Id": session.id });
 }
 
 function streamResponse(
@@ -528,6 +530,99 @@ async function injectFailure(request: Request, store: DemoStore): Promise<Respon
   if (update === "missing") return jsonResponse({ error: { code: "stream_not_found" } }, 404);
   if (update === "terminal") return jsonResponse({ error: { code: "stream_terminal" } }, 409);
   return jsonResponse({ accepted: true, stream_id: id, scenario });
+}
+
+class LiveDemoStore implements DemoStore {
+  private controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  private readonly pending: JournalEntry[] = [];
+  private cancelled = false;
+  private closed = false;
+
+  constructor(private readonly delegate: DemoStore) {}
+
+  response(headers: Record<string, string>): Response {
+    const body = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        this.controller = controller;
+        for (const entry of this.pending.splice(0)) this.push(entry);
+      },
+      cancel: () => {
+        this.cancelled = true;
+        this.controller = null;
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: corsHeaders({
+        "Cache-Control": "no-cache, no-transform",
+        "Content-Type": "text/event-stream; charset=utf-8",
+        ...headers,
+      }),
+    });
+  }
+
+  initialize(): Promise<void> {
+    return this.delegate.initialize();
+  }
+
+  cleanup(before: number): Promise<void> {
+    return this.delegate.cleanup(before);
+  }
+
+  create(session: DemoSession): Promise<void> {
+    return this.delegate.create(session);
+  }
+
+  get(id: string): Promise<DemoSession | null> {
+    return this.delegate.get(id);
+  }
+
+  control(id: string): Promise<SessionControl | null> {
+    return this.delegate.control(id);
+  }
+
+  setFailure(id: string, scenario: FailureScenario): Promise<FailureUpdate> {
+    return this.delegate.setFailure(id, scenario);
+  }
+
+  requestStop(id: string): Promise<DemoSession | null> {
+    return this.delegate.requestStop(id);
+  }
+
+  async append(session: DemoSession, entry: JournalEntry): Promise<void> {
+    await this.delegate.append(session, entry);
+    this.push(entry);
+  }
+
+  async markTerminal(session: DemoSession): Promise<void> {
+    await this.delegate.markTerminal(session);
+    this.close();
+  }
+
+  replay(id: string, afterOrdinal: number): Promise<ReplayBatch> {
+    return this.delegate.replay(id, afterOrdinal);
+  }
+
+  private push(entry: JournalEntry): void {
+    if (this.cancelled || this.closed) return;
+    if (this.controller === null) {
+      this.pending.push(entry);
+      return;
+    }
+    this.controller.enqueue(encoder.encode(entry.wire));
+    if (entry.terminal) this.close();
+  }
+
+  private close(): void {
+    if (this.cancelled || this.closed) return;
+    this.closed = true;
+    try {
+      this.controller?.close();
+    } catch {
+      // A browser cancellation can race a terminal producer write.
+    }
+    this.controller = null;
+  }
 }
 
 class D1DemoStore implements DemoStore {
@@ -892,6 +987,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function createFlushPadding(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(1024));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 function createULID(): string {
