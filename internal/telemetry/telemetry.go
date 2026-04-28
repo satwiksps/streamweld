@@ -191,7 +191,7 @@ func New(
 		}, labels),
 		ttft: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "streamweld_ttft_seconds",
-			Help:    "Time from durable stream creation to its first text chunk.",
+			Help:    "Time from client stream request arrival to its first text chunk.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 16),
 		}, labels),
 		interToken: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -201,7 +201,7 @@ func New(
 		}, labels),
 		streamDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "streamweld_stream_duration_seconds",
-			Help:    "Elapsed time from durable stream creation to terminal outcome.",
+			Help:    "Elapsed time from client stream request arrival to terminal outcome.",
 			Buckets: prometheus.ExponentialBuckets(0.01, 2, 18),
 		}, labels),
 		journalBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -480,12 +480,13 @@ func (r *Recorder) StartStream(
 	streamID string,
 	labels Labels,
 	operation string,
+	requestStartedAt time.Time,
 ) (context.Context, trace.Span) {
 	if r == nil {
 		return ctx, trace.SpanFromContext(ctx)
 	}
 	labels = normalized(labels)
-	return r.tracer.Start(ctx, operation+" "+labels.Model,
+	options := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(
 			attribute.String("gen_ai.operation.name", operation),
@@ -494,7 +495,11 @@ func (r *Recorder) StartStream(
 			attribute.String("streamweld.stream.id", streamID),
 			attribute.String("streamweld.route", labels.Route),
 		),
-	)
+	}
+	if !requestStartedAt.IsZero() {
+		options = append(options, trace.WithTimestamp(requestStartedAt))
+	}
+	return r.tracer.Start(ctx, operation+" "+labels.Model, options...)
 }
 
 // StartAttempt starts one child client span for an upstream backend attempt.

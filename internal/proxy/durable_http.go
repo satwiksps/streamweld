@@ -30,6 +30,7 @@ const (
 )
 
 func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Request) {
+	requestStartedAt := time.Now()
 	original, err := readRequestBody(request.Body, h.durable.config.MaxRequestBytes)
 	if err != nil {
 		if errors.Is(err, errRequestBodyTooLarge) {
@@ -69,7 +70,9 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 		return
 	}
 
-	resolution, err := h.durable.resolve(request, normalized, policy, idempotencyKey)
+	resolution, err := h.durable.resolve(
+		request, normalized, policy, idempotencyKey, requestStartedAt,
+	)
 	if err != nil {
 		writeAPIError(writer, http.StatusServiceUnavailable, "durability_unavailable", "durable stream creation is temporarily unavailable")
 		return
@@ -81,7 +84,9 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 		writer.Header().Set(headerDurability, durabilityDegraded)
 		restoreRequestBody(request, normalized.Body)
 		stripStreamweldHeaders(request.Header)
-		h.serveDegradedCompletion(writer, request, resolution.id, normalized.Model, degradedBackend)
+		h.serveDegradedCompletion(
+			writer, request, resolution.id, normalized.Model, degradedBackend, requestStartedAt,
+		)
 		return
 	}
 
@@ -136,15 +141,15 @@ func (h *Handler) serveDegradedCompletion(
 	id journal.StreamID,
 	model string,
 	selected backend.State,
+	requestStartedAt time.Time,
 ) {
 	labels := telemetry.Labels{Route: h.durable.routeForModel(model), Model: model}
-	startedAt := time.Now().UTC()
 	h.durable.telemetry.StreamStarted(labels)
 	parentContext := propagation.TraceContext{}.Extract(
 		request.Context(), propagation.HeaderCarrier(request.Header),
 	)
 	streamContext, streamSpan := h.durable.telemetry.StartStream(
-		parentContext, id.String(), labels, operationForEndpoint(request.URL.Path),
+		parentContext, id.String(), labels, operationForEndpoint(request.URL.Path), requestStartedAt,
 	)
 	attemptContext, attemptSpan := h.durable.telemetry.StartAttempt(
 		streamContext,
@@ -164,7 +169,7 @@ func (h *Handler) serveDegradedCompletion(
 		ResponseWriter: writer,
 		onBody: func(now time.Time) {
 			if lastBodyAt.IsZero() {
-				h.durable.telemetry.TTFT(labels, now.Sub(startedAt))
+				h.durable.telemetry.TTFT(labels, now.Sub(requestStartedAt))
 			} else {
 				h.durable.telemetry.InterToken(labels, now.Sub(lastBodyAt))
 			}
@@ -187,7 +192,7 @@ func (h *Handler) serveDegradedCompletion(
 			attemptErr = fmt.Errorf("upstream response status %d", observed.StatusCode())
 		}
 		h.durable.telemetry.EndAttempt(attemptSpan, attemptErr, "")
-		h.durable.telemetry.StreamFinished(labels, id.String(), outcome, time.Since(startedAt))
+		h.durable.telemetry.StreamFinished(labels, id.String(), outcome, time.Since(requestStartedAt))
 		h.durable.telemetry.EndStream(streamSpan, outcome, 0, 0, true, "")
 		h.durable.logger.InfoContext(request.Context(), "degraded stream completed",
 			"stream_id", id,
@@ -230,7 +235,7 @@ func (writer *degradedTelemetryResponseWriter) Write(payload []byte) (int, error
 		writer.statusCode = http.StatusOK
 	}
 	if len(payload) != 0 && writer.onBody != nil {
-		writer.onBody(time.Now().UTC())
+		writer.onBody(time.Now())
 	}
 	writer.mu.Unlock()
 	return writer.ResponseWriter.Write(payload)

@@ -74,7 +74,7 @@ func TestStaleIdempotencyCleanerCannotDeleteNewReadyWinner(t *testing.T) {
 	go func() {
 		resolution, resolveErr := service.resolve(request, normalizedRequest{
 			Body: []byte(`{"model":"model","stream":true}`), Model: "model", Stream: true,
-		}, service.policyForModel("model"), key)
+		}, service.policyForModel("model"), key, time.Now())
 		resolutionResult <- struct {
 			resolution streamResolution
 			err        error

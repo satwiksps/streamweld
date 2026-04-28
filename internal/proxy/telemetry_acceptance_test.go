@@ -409,6 +409,137 @@ func TestObservabilityExposesJournalDegradedGaugeOnOpenOutage(t *testing.T) {
 	assertAttemptTraceparent(t, <-traceparent, root, attempts)
 }
 
+func TestObservabilityTimingIncludesJournalOpen(t *testing.T) {
+	const openDelay = 120 * time.Millisecond
+	minimumObserved := openDelay * 3 / 4
+	tests := []struct {
+		name       string
+		openErr    error
+		durability string
+	}{
+		{name: "durable", durability: durabilityDurable},
+		{name: "degraded", openErr: errors.New("injected delayed outage"), durability: durabilityDegraded},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backendServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				startDurableBackendSSE(writer)
+				writeDurableBackendData(writer, `{"choices":[{"index":0,"delta":{"content":"ready"},"finish_reason":null}]}`)
+				writeDurableBackendData(writer, doneSentinelData)
+			}))
+			t.Cleanup(backendServer.Close)
+
+			memoryConfig := journal.DefaultConfig()
+			memoryConfig.MaxTotalBytes = 8 << 20
+			memoryConfig.ReaderMaxLagBytes = 1 << 20
+			memory, err := journal.NewMemory(memoryConfig)
+			if err != nil {
+				t.Fatalf("journal.NewMemory() error = %v", err)
+			}
+			delayedJournal := &delayedTelemetryJournal{
+				Memory: memory, delay: openDelay, openErr: test.openErr,
+				openStarted: make(chan time.Time, 1),
+			}
+			exporter := tracetest.NewInMemoryExporter()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+			recorder, err := telemetry.New(nil, nil, provider)
+			if err != nil {
+				t.Fatalf("telemetry.New() error = %v", err)
+			}
+			config := DefaultConfig()
+			config.BackendURL = backendServer.URL
+			server, err := NewServer(config, nil,
+				WithJournal(delayedJournal),
+				WithStreamIDGenerator(&durableSequentialIDs{}),
+				WithTelemetry(recorder),
+			)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+			front := httptest.NewServer(server.Handler())
+			t.Cleanup(func() {
+				server.forceCancel()
+				front.Close()
+			})
+			client := &http.Client{Timeout: durableHTTPTestTimeout}
+			model := "timing-" + test.name
+			response := doDurableHTTPRequest(t, client, newDurableHTTPRequest(
+				t,
+				http.MethodPost,
+				front.URL+"/v1/chat/completions",
+				fmt.Sprintf(`{"model":%q,"stream":true,"messages":[]}`, model),
+			))
+			defer closeDurableHTTPBody(t, response.Body)
+			if got := response.Header.Get(headerDurability); got != test.durability {
+				t.Fatalf("durability = %q, want %q", got, test.durability)
+			}
+			_ = readAllDurableSSE(t, response.Body)
+			closeDurableHTTPBody(t, response.Body)
+			openStartedAt := <-delayedJournal.openStarted
+
+			metrics := doDurableHTTPRequest(t, client,
+				newDurableHTTPRequest(t, http.MethodGet, front.URL+"/metrics", ""))
+			defer closeDurableHTTPBody(t, metrics.Body)
+			body := string(readDurableHTTPBody(t, metrics.Body))
+			closeDurableHTTPBody(t, metrics.Body)
+			labels := map[string]string{"route": "default", "model": model}
+			requireObservedMetricAtLeast(
+				t, body, "streamweld_ttft_seconds_sum", labels, minimumObserved.Seconds(),
+			)
+			requireObservedMetricAtLeast(
+				t, body, "streamweld_stream_duration_seconds_sum", labels, minimumObserved.Seconds(),
+			)
+
+			spans := exporter.GetSpans()
+			var root *tracetest.SpanStub
+			for index := range spans {
+				if spans[index].SpanKind == trace.SpanKindServer {
+					root = &spans[index]
+				}
+			}
+			if root == nil {
+				t.Fatalf("no root span exported: %+v", spans)
+			}
+			if root.StartTime.After(openStartedAt.Add(20 * time.Millisecond)) {
+				t.Errorf("root span started at %s after journal Open began at %s", root.StartTime, openStartedAt)
+			}
+			if got := root.EndTime.Sub(root.StartTime); got < minimumObserved {
+				t.Errorf("root span duration = %s, want at least %s", got, minimumObserved)
+			}
+		})
+	}
+}
+
+type delayedTelemetryJournal struct {
+	*journal.Memory
+	delay       time.Duration
+	openErr     error
+	openStarted chan time.Time
+}
+
+func (backend *delayedTelemetryJournal) Open(
+	ctx context.Context,
+	id journal.StreamID,
+	meta journal.Meta,
+) error {
+	select {
+	case backend.openStarted <- time.Now():
+	default:
+	}
+	timer := time.NewTimer(backend.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+	}
+	if backend.openErr != nil {
+		return backend.openErr
+	}
+	return backend.Memory.Open(ctx, id, meta)
+}
+
 func TestDegradedTelemetryClosesLifecycleWhenReverseProxyAborts(t *testing.T) {
 	memoryConfig := journal.DefaultConfig()
 	memoryConfig.MaxTotalBytes = 8 << 20
@@ -566,6 +697,19 @@ func requireObservedMetricPositive(t *testing.T, body, name string, labels map[s
 	got, ok := observedMetricValue(body, name, labels)
 	if !ok || got <= 0 {
 		t.Fatalf("metric %s with labels %v = %v (present=%v), want positive", name, labels, got, ok)
+	}
+}
+
+func requireObservedMetricAtLeast(
+	t *testing.T,
+	body, name string,
+	labels map[string]string,
+	want float64,
+) {
+	t.Helper()
+	got, ok := observedMetricValue(body, name, labels)
+	if !ok || got < want {
+		t.Fatalf("metric %s with labels %v = %v (present=%v), want at least %v", name, labels, got, ok, want)
 	}
 }
 

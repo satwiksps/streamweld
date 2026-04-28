@@ -111,6 +111,7 @@ type streamRuntime struct {
 	telemetryOutcome        string
 	telemetryUsage          tokenUsage
 	telemetryFinishReason   string
+	requestStartedAt        time.Time
 	journalBytes            int64
 	lastTextAt              time.Time
 	attemptPromptObserved   uint64
@@ -173,6 +174,7 @@ func (s *durableService) resolve(
 	normalized normalizedRequest,
 	policy streamPolicy,
 	idempotencyKey string,
+	requestStartedAt time.Time,
 ) (streamResolution, error) {
 	waitContext, cancelWait := context.WithTimeout(request.Context(), s.config.ReadinessTimeout)
 	defer cancelWait()
@@ -288,7 +290,7 @@ func (s *durableService) resolve(
 			request.Context(), propagation.HeaderCarrier(request.Header),
 		)
 		_, span := s.telemetry.StartStream(
-			context.WithoutCancel(parentContext), id.String(), labels, operation,
+			context.WithoutCancel(parentContext), id.String(), labels, operation, requestStartedAt,
 		)
 		producerContext, cancel := context.WithCancelCause(trace.ContextWithSpan(s.rootContext, span))
 		structured, _ := migrate.IsStructuredRequest(normalized.Body)
@@ -320,6 +322,7 @@ func (s *durableService) resolve(
 			stopWait:                   make(chan struct{}),
 			lastSeq:                    1,
 			span:                       span,
+			requestStartedAt:           requestStartedAt,
 			journalBytes:               int64(len(normalized.Body) + len(openPayload)),
 		}
 		runtime.openEntry = journal.Entry{Seq: 1, Kind: journal.KindOpen, Payload: openPayload}
@@ -389,6 +392,13 @@ func operationForEndpoint(endpoint string) string {
 
 func (r *streamRuntime) telemetryLabels() telemetry.Labels {
 	return telemetry.Labels{Route: r.route, Model: r.model}
+}
+
+func (r *streamRuntime) telemetryStartTime() time.Time {
+	if !r.requestStartedAt.IsZero() {
+		return r.requestStartedAt
+	}
+	return r.createdAt
 }
 
 func (s *durableService) start(runtime *streamRuntime, rawQuery string) (*upstreamRejection, error) {
@@ -472,7 +482,7 @@ func (r *streamRuntime) appendChunk(event sse.Event, observation chunkObservatio
 }
 
 func (r *streamRuntime) recordAcceptedChunk(observation chunkObservation) {
-	now := time.Now().UTC()
+	now := time.Now()
 	var ttft, inter time.Duration
 	var recordTTFT, recordInter bool
 	var promptDelta uint64
@@ -484,7 +494,7 @@ func (r *streamRuntime) recordAcceptedChunk(observation chunkObservation) {
 	}
 	if observation.TextDelta != "" {
 		if r.lastTextAt.IsZero() {
-			ttft = now.Sub(r.createdAt)
+			ttft = now.Sub(r.telemetryStartTime())
 			recordTTFT = true
 		} else {
 			inter = now.Sub(r.lastTextAt)
@@ -533,7 +543,7 @@ func (r *streamRuntime) recordTerminal(kind journal.EntryKind) {
 		r.telemetryFinishReason = r.finishReason
 		r.mu.Unlock()
 		r.service.telemetry.StreamFinished(
-			r.telemetryLabels(), r.id.String(), outcome, time.Since(r.createdAt),
+			r.telemetryLabels(), r.id.String(), outcome, time.Since(r.telemetryStartTime()),
 		)
 	})
 }
