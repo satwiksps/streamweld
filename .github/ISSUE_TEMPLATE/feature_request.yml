@@ -1,0 +1,86 @@
+name: Feature request
+description: Propose a focused capability or protocol improvement.
+title: "[Feature]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the problem before proposing an API. Protocol, persistence, migration-safety, CRD, and public SDK changes require explicit compatibility analysis.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Durable stream protocol or proxy
+        - Redis journal or owner relay
+        - Kubernetes operator or CRDs
+        - Helm chart or samples
+        - streamweldctl
+        - TypeScript client
+        - Vercel AI SDK adapter
+        - Observability
+        - Chaos, benchmark, or developer tooling
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Who encounters the problem, in what deployment, and what do they have to do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior and success criteria without assuming a particular implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Outline a bounded implementation if you have one. Include relevant configuration, wire, or TypeScript examples.
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and operational impact
+      description: Address existing clients, protocol versions, CRDs, rolling upgrades, resource bounds, failure modes, and security boundaries as applicable.
+      placeholder: "No wire change; additive Helm value with an unchanged default; safe during a mixed-version rollout ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain workarounds or smaller options and why they are insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting evidence
+      description: Link non-sensitive traces, measurements, specifications, or prior art. Do not invent benchmark numbers.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues, pull requests, and decision records.
+          required: true
+        - label: I described the problem and compatibility impact, not only an implementation preference.
+          required: true
+        - label: I did not include credentials or private user data.
+          required: true
+

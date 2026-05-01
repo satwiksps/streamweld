@@ -1,0 +1,111 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Streamweld.
+title: "[Bug]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Streamweld. Do not report vulnerabilities or include secrets here. Use the private security link shown on the issue chooser instead.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Select the smallest area that contains the problem.
+      options:
+        - Go proxy or durable stream protocol
+        - Redis journal or owner relay
+        - Kubernetes operator or CRDs
+        - Helm chart or samples
+        - streamweldctl
+        - TypeScript client
+        - Vercel AI SDK adapter
+        - Demo application
+        - Chaos or benchmark harness
+        - Build, release, or documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Provide a release, image digest, chart or npm version, or commit SHA.
+      placeholder: "v0.1.0, ghcr.io/...@sha256:..., or commit abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment profile
+      options:
+        - Standalone proxy with memory journal
+        - Single-replica Helm installation
+        - Multi-replica Helm installation with Redis
+        - Local unit or integration test
+        - kind or other local Kubernetes cluster
+        - TypeScript/browser/edge runtime only
+        - Hosted failure lab
+        - Other or not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and why it is incorrect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest configuration and ordered commands or code that reproduce the problem. Redact credentials and user data.
+      placeholder: |
+        1. Install/configure ...
+        2. Send ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the expected terminal outcome, protocol event, API result, or operational behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS/architecture, Go or Node version, Kubernetes and Redis versions, browser/runtime, and relevant non-secret settings.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs or evidence
+      description: Paste only the relevant lines. Remove prompts, generated content, tokens, Redis URLs, certificates, cloud IDs, and other secrets.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and pull requests for this problem.
+          required: true
+        - label: I removed credentials, prompts, generated user content, and other sensitive data.
+          required: true
+        - label: This is not a vulnerability report.
+          required: true
+

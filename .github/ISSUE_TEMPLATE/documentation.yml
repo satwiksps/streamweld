@@ -1,0 +1,56 @@
+name: Documentation issue
+description: Report missing, inaccurate, or confusing documentation.
+title: "[Docs]: "
+labels: []
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Documentation area
+      options:
+        - Quickstart or README
+        - Protocol
+        - Operations and security
+        - Helm chart or Kubernetes samples
+        - TypeScript client or AI SDK adapter
+        - Compatibility or benchmarks
+        - Contributor documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: Link the page or provide the repository path and heading.
+      placeholder: "docs/operations.md#owner-relay-for-redis-outages"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear or incorrect?
+      description: Quote only the smallest relevant fragment and explain the reader's context.
+    validations:
+      required: true
+
+  - type: textarea
+    id: correction
+    attributes:
+      label: Suggested correction
+      description: Describe the missing example, corrected statement, or reorganization that would resolve the issue.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I checked the current `main` branch and searched for an existing issue.
+          required: true
+        - label: Any performance or compatibility claim I suggest is backed by reproducible evidence.
+          required: true
+
