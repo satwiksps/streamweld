@@ -1,0 +1,4 @@
+# The bucket must already exist, have Object Versioning enabled, and be
+# accessible through Application Default Credentials or workload identity.
+bucket = "my-terraform-state-bucket"
+prefix = "streamweld/demo"

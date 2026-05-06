@@ -1,0 +1,2 @@
+backend.gcs.hcl
+*.tfplan

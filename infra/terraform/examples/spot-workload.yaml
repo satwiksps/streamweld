@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: spot-gpu-proof
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    cloud.google.com/gke-spot: "true"
+  tolerations:
+    - key: cloud.google.com/gke-spot
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  containers:
+    - name: cuda-check
+      image: nvidia/cuda:12.6.3-base-ubuntu22.04
+      command: ["nvidia-smi"]
+      resources:
+        limits:
+          nvidia.com/gpu: "1"

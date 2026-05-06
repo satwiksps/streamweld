@@ -1,0 +1,10 @@
+project_id = "my-gcp-project"
+
+# Defaults create one on-demand T4 node and one Spot T4 node in us-central1-a.
+# Confirm GPU quota and zone capacity before applying.
+# region = "us-central1"
+# zone   = "us-central1-a"
+
+labels = {
+  owner = "platform"
+}
