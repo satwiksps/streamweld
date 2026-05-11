@@ -1,0 +1,66 @@
+:root {
+	--sl-color-accent-low: #123331;
+	--sl-color-accent: #55e2c2;
+	--sl-color-accent-high: #c8fff1;
+	--sl-color-white: #f4f7f5;
+	--sl-color-gray-1: #d9e1df;
+	--sl-color-gray-2: #a7b6b3;
+	--sl-color-gray-3: #6f817f;
+	--sl-color-gray-4: #425350;
+	--sl-color-gray-5: #263633;
+	--sl-color-gray-6: #172522;
+	--sl-color-black: #0b1319;
+	--streamweld-coral: #ff806c;
+}
+
+body {
+	background:
+		radial-gradient(circle at 82% 4%, rgb(85 226 194 / 9%), transparent 24rem),
+		var(--sl-color-bg);
+}
+
+.hero {
+	padding-block: clamp(3rem, 9vw, 7rem);
+}
+
+.hero .tagline {
+	max-width: 42rem;
+}
+
+.hero h1,
+.content-panel h1,
+.content-panel h2 {
+	letter-spacing: -0.035em;
+}
+
+.card {
+	background: linear-gradient(145deg, rgb(23 37 34 / 88%), rgb(11 19 25 / 95%));
+	border-color: rgb(85 226 194 / 20%);
+	box-shadow: 0 18px 50px rgb(0 0 0 / 12%);
+}
+
+pre {
+	border: 1px solid rgb(85 226 194 / 16%);
+	box-shadow: inset 3px 0 0 rgb(255 128 108 / 72%);
+}
+
+.sl-markdown-content a:not(.sl-link-button) {
+	text-underline-offset: 0.2em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.hero h1 {
+		animation: streamweld-reveal 500ms ease-out both;
+	}
+}
+
+@keyframes streamweld-reveal {
+	from {
+		opacity: 0;
+		transform: translateY(0.5rem);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}

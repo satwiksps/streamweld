@@ -20,6 +20,8 @@ node_modules/
 packages/*/dist/
 apps/*/dist/
 apps/*/.vite/
+apps/*/.astro/
+apps/*/astro-dist/
 
 # Local configuration and secrets
 .env

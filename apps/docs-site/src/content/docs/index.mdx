@@ -1,0 +1,71 @@
+---
+title: Durable token streams for self-hosted inference
+description: Streamweld keeps one logical LLM response alive when a backend pod, node, or client connection disappears.
+template: splash
+hero:
+  tagline: Every generation gets an identity, an append-only journal, and an exact resume cursor.
+  actions:
+    - text: Install Streamweld
+      link: /getting-started/
+      icon: right-arrow
+    - text: Open the failure lab
+      link: https://streamweld-failure-lab.satwiksub.chatgpt.site
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## A small durability layer, not another model gateway
+
+<CardGrid>
+	<Card title="Reader resume" icon="refresh">
+		Reconnect with the stream ID and exact last event ID. Already-delivered chunks stay delivered exactly once.
+	</Card>
+	<Card title="Producer migration" icon="seti:config">
+		Continue on an eligible backend only when chat-template probes and runtime safety predicates say the seam is safe.
+	</Card>
+	<Card title="Explicit stop" icon="stop">
+		Stopping generation is a protocol operation. Dropping a socket only detaches the reader.
+	</Card>
+</CardGrid>
+
+The OpenAI-compatible proxy handles the data plane. A Kubernetes operator tracks
+eligible backends, drains rollouts, and distributes route snapshots without
+restarting the proxy.
+
+```text
+client ──SSE──▶ proxy ──▶ backend A ✕
+                  │            │
+                  ▼            └── journaled prefix
+             append-only              │
+               journal                ▼
+                  │              backend B ──▶ same stream
+                  └── exact replay cursor ──▶ reconnected reader
+```
+
+## Start with evidence
+
+The deterministic failure matrix checks the entire output, not merely the HTTP
+status. The committed local profile covers nine fault shapes; nightly CI repeats
+the physical Kubernetes scenarios on kind. Timing figures are scoped to the host
+and profile that produced them.
+
+<CardGrid>
+	<Card title="Run the quickstart" icon="rocket">
+		Install the chart and CPU-only fixtures, then delete a serving backend while a request is open.
+	</Card>
+	<Card title="Read the protocol" icon="document">
+		See the ordered journal, exclusive cursor, terminal states, and exact failure responses.
+	</Card>
+	<Card title="Try the failure lab" icon="external">
+		The public lab is a protocol simulation for exploring reconnect, stop, and journal behavior without a cluster.
+	</Card>
+</CardGrid>
+
+:::caution[Know the boundary]
+Streamweld can continue a generation only when the request shape, token budget,
+model version, and chat template make continuation safe. It deliberately refuses
+unsafe migrations. It does not make sampling bit-for-bit deterministic, replace a
+model scheduler, or provide an authentication and billing gateway.
+:::

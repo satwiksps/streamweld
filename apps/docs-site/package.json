@@ -1,0 +1,24 @@
+{
+  "name": "@streamweld/docs-site",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build && vite build --config vite.config.ts",
+    "build:astro": "astro build",
+    "preview": "vite preview --config vite.config.ts",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.7",
+    "astro": "^7.1.6",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/workers-types": "4.20260515.1",
+    "@openai/sites-vite-plugin": "0.2.0"
+  }
+}
