@@ -2,102 +2,111 @@
 
 > Your token stream shouldn't die because a pod got evicted or a phone switched to cellular.
 
-Streamweld is a durable stream layer for LLM inference: an OpenAI-compatible reverse proxy and Kubernetes operator that give every generation an identity and an append-only event log.
+Streamweld is a durable stream layer for self-hosted LLM inference: one OpenAI-compatible stream identity and append-only journal that can outlive both its reader connection and its current backend attempt.
 
-Non-streaming responses use the direct pass-through path with journaling
-disabled. The bounded request body is inspected only to select streaming mode;
-its original bytes are then restored before proxy forwarding.
-
-The protocol is defined in [`docs/protocol.md`](docs/protocol.md). The implementation is being built in the ordered phases recorded in [`streamweld-build-spec.md`](streamweld-build-spec.md); claims and performance numbers are published only when backed by reproducible tests.
-
-Before allowing producer migration for a model, probe its chat-template
-continuation behavior with `streamweldctl doctor --backend URL --model NAME`.
-The checker and the honestly scoped results table are documented in
-[`docs/compatibility.md`](docs/compatibility.md).
-
-## Development prerequisites
-
-- Go 1.23 or newer
-- Node.js 20 or newer
-- pnpm 11 or newer
-- GNU Make 4 or newer
-
-Run the repository checks with:
+[▶ Play the 20-second terminal cast](docs/assets/streamweld-demo.cast) · [Open the live failure lab](https://streamweld-failure-lab.satwiksub.chatgpt.site) · [Read the documentation](https://streamweld-docs.satwiksub.chatgpt.site)
 
 ```sh
-make test
+asciinema play docs/assets/streamweld-demo.cast
 ```
 
-## Local durable proxy
+The cast is a scripted walkthrough of the deterministic pod-kill scenario. The
+committed local benchmark is an in-process fault model; the non-skippable nightly
+kind job is the physical Kubernetes failure gate.
 
-Start any OpenAI-compatible backend on port 8000, then run:
+## The problem
+
+When an LLM streams a response and something breaks mid-stream, everything
+already generated is commonly lost and the request restarts from zero, re-billing
+the prompt.
+
+| Failure | Who breaks | Status quo |
+|---|---|---|
+| Backend pod OOMs or crashes | producer | stream dies, client sees truncated output |
+| Rolling update / model version bump | producer | in-flight generations killed at `terminationGracePeriodSeconds` |
+| Spot GPU node reclaimed | producer | same |
+| Client WiFi → cellular, tab backgrounded | consumer | stream dies, server may keep burning GPU |
+| Proxy/LB idle timeout | transport | stream dies |
+| User presses stop | intentional | frequently indistinguishable from a disconnect |
+
+Streamweld treats a generation as a resource with a lowercase ULID, an ordered
+journal, and an exact exclusive cursor. A socket close detaches one reader; only
+the stop endpoint cancels generation.
+
+## Prior art, honestly
+
+Streamweld does not claim to have invented request migration, Redis-backed
+resume, or gateway fallback. It combines a deliberately narrow subset of those
+ideas for OpenAI-compatible self-hosted inference.
+
+| Project | What it does well | What Streamweld adds | What Streamweld does not do better |
+|---|---|---|---|
+| [NVIDIA Dynamo](https://docs.nvidia.com/dynamo/dev/kubernetes/fault-tolerance/request-migration) | In-flight request migration inside a distributed inference runtime, including transparent continuation | A small standalone proxy/operator, externally replayable SSE cursor, explicit stop protocol, TypeScript client, and CRD policy | Dynamo is the broader inference platform; Streamweld does not replace its scheduling, serving runtime, or cache-aware architecture |
+| [Vercel `resumable-stream`](https://github.com/vercel/resumable-stream) | Redis-backed application streams that can keep producing after the original reader leaves and resume later | Backend-producer failover, continuation safety gates, model/template admission, and Kubernetes drain coordination | Streamweld is not a general serverless stream primitive and does not match its framework-native application ergonomics |
+| [LiteLLM](https://docs.litellm.ai/) | Broad provider unification, retries and fallbacks, routing, authentication, budgets, and cost controls | A generation journal with exact reader replay and conservative continuation of an already-started self-hosted stream | Streamweld is not a multi-provider gateway, auth plane, or spend-management product |
+| [Envoy AI Gateway](https://aigateway.envoyproxy.io/docs/capabilities/traffic/provider-fallback/) | Gateway-native routing, retry, and provider fallback | In-flight token continuation with explicit seam, template, request-shape, and terminal-state checks | Streamweld is not a general Envoy traffic platform and has a much smaller routing surface |
+
+The differentiator is not “retry.” It is one protocol that separates reader
+resume, producer migration, and user stop while refusing a migration when the
+continuation proof does not hold.
+
+## Quickstart
+
+Prerequisites: Kubernetes 1.27 or newer, Helm 3.14 or newer, and `kubectl`.
+Tagged releases install from the OCI chart:
 
 ```sh
-go run ./cmd/streamweld-proxy --backend http://127.0.0.1:8000 --listen :8080
+helm upgrade --install streamweld oci://ghcr.io/streamweld/charts/streamweld \
+  --namespace streamweld-system \
+  --create-namespace
 ```
 
-The proxy accepts OpenAI-compatible chat and legacy completions plus
-`GET /v1/models`. A streaming response includes
-`X-Streamweld-Stream-Id`; complete upstream SSE chunks are committed before
-delivery and can be replayed from an exclusive cursor. Unknown JSON request
-fields survive normalization. Health probes are available at `/healthz` and
-`/readyz`.
+From a source checkout before the first tagged release, use the local chart:
 
-When the configured pool contains a compatible healthy target, an unexpected
-producer EOF, reset, 5xx, error chunk, failed health probe, explicit backend
-drain, or enabled stall detector starts a bounded continuation attempt. The
-proxy journals the handoff before continuation chunks and removes only a
-UTF-8-safe leading overlap. Migration remains disabled for unknown or unsafe
-chat-template verdicts under the default strict policy.
+```sh
+helm upgrade --install streamweld ./deploy/helm/streamweld \
+  --namespace streamweld-system \
+  --create-namespace
+```
+
+Apply the deterministic CPU-only OpenAI fixture and Streamweld policy:
+
+```sh
+kubectl apply -f deploy/samples/
+kubectl -n streamweld-system wait --for=condition=Available \
+  deployment/streamweld-proxy deployment/streamweld-operator \
+  deployment/streamweld-sample-backend --timeout=180s
+```
+
+Port-forward the proxy in one terminal:
+
+```sh
+kubectl -n streamweld-system port-forward service/streamweld-proxy 8080:8080
+```
+
+Start a long deterministic stream in a second terminal:
 
 ```sh
 curl -N http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"your-model","messages":[{"role":"user","content":"Count to five."}],"stream":true}'
+  -d '{"model":"streamweld/deterministic-vllm","messages":[{"role":"user","content":"Count steadily."}],"max_tokens":512,"stream":true}'
 ```
 
-Resume a disconnected reader with the returned stream ID and its last SSE
-`id`:
+While `curl` is printing, delete exactly one serving backend from a third
+terminal:
 
 ```sh
-curl -N http://127.0.0.1:8080/v1/streams/STREAM_ID/events \
-  -H 'Last-Event-ID: 41'
+POD_TO_KILL=$(kubectl -n streamweld-system get pods \
+  -l app.kubernetes.io/name=streamweld-sample-backend \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl -n streamweld-system delete pod "$POD_TO_KILL" --wait=false
 ```
 
-Only an explicit stop cancels generation:
-
-```sh
-curl -X POST http://127.0.0.1:8080/v1/streams/STREAM_ID/stop
-```
-
-Drain one registered backend and wait for its leases to reach zero:
-
-```sh
-curl -X POST 'http://127.0.0.1:8080/internal/backends/127.0.0.1%3A8000/drain?timeout=10s'
-```
-
-## TypeScript clients
-
-`@streamweld/client` keeps one async iterable alive across transport failures
-and exposes independent typed-event and text views:
-
-```ts
-import { createDurableStream } from "@streamweld/client";
-
-const stream = createDurableStream({
-  url: "http://127.0.0.1:8080/v1/chat/completions",
-  body: { model: "your-model", messages, stream: true },
-});
-
-for await (const delta of stream.text) render(delta);
-```
-
-`await stream.stop()` explicitly cancels generation. An `AbortSignal` only
-detaches the local reader and leaves the identified generation resumable.
-`@streamweld/ai-sdk` implements Vercel AI SDK v5 `ChatTransport`, allowing a
-`useChat` app to switch its transport while retaining durable cursor resume.
-See [`docs/client.md`](docs/client.md) for typed outcomes, persistence, exact
-`uint64` cursor handling, and the adapter contract.
+The same `curl` remains attached while the proxy records a migration and
+continues on the other compatible backend. The fixture is for protocol and
+rollout validation, not a production-model compatibility or performance claim.
+See the [ten-minute guide](https://streamweld-docs.satwiksub.chatgpt.site/getting-started/)
+for teardown and the release/source distinction.
 
 <!-- streamweld:benchmarks:start -->
 ## Local chaos model (simulation) results
@@ -123,90 +132,121 @@ TTFT is a wall-clock p50 from the recorded host. Both paths include the fake bac
 Full metadata and scenario-specific terminal outcomes are in [`benchmarks/results.md`](benchmarks/results.md).
 <!-- streamweld:benchmarks:end -->
 
-## Kubernetes operator
+## Compatibility
 
-Install the single-replica memory profile and apply the deterministic CPU-only
-sample:
-
-```sh
-helm upgrade --install streamweld deploy/helm/streamweld \
-  --namespace streamweld-system --create-namespace
-
-kubectl apply -f deploy/samples/deterministic-backend.yaml
-kubectl apply -f deploy/samples/durability-policy.yaml
-kubectl apply -f deploy/samples/inference-route.yaml
-```
-
-`InferenceRoute` binds an exact model to selected backend Pods and a
-`DurabilityPolicy`. The operator probes each newly Ready backend, then pushes a
-UID- and generation-fenced snapshot directly to every proxy Pod. EndpointSlice
-changes do not restart proxies. Route deletion completes only after every
-non-terminating proxy acknowledges the tombstone.
-
-For multiple proxy replicas, use a shared Redis journal:
+Migration requires the target backend's chat template to continue an existing
+assistant message. `streamweldctl doctor` repeats continuation, mid-word,
+punctuation, and temperature-zero idempotence probes and keys its cache by the
+immutable `(backend image digest, model, tokenizer hash)` tuple.
 
 ```sh
-helm upgrade --install streamweld deploy/helm/streamweld \
-  --namespace streamweld-system --create-namespace \
-  --set journal.backend=redis \
-  --set redis.enabled=true \
-  --set proxy.replicaCount=2
+streamweldctl doctor --backend http://127.0.0.1:8000 --model MODEL --json
 ```
 
-Backend rollout drains are Pod-scoped and fanned out by the operator to every
-proxy replica. A manual drain uses the same all-replica barrier:
+| Backend | Model | Verdict | Probe date (UTC) | Evidence |
+|---|---|:---:|---:|---|
+| In-process deterministic safe fixture | `fixture-model` | `SAFE` | 2026-08-22 | `TestCheckerProbeMatrixAndVerdicts/all_probes_pass` and `TestDoctorCommandHumanReport` |
+| In-process deliberately broken-template fixture | `broken-model` | `UNSAFE` | 2026-08-22 | `TestDoctorCommandBrokenTemplateJSON` |
 
-```sh
-kubectl -n streamweld-system port-forward service/streamweld-operator 8082:8082
-streamweldctl drain --endpoint http://127.0.0.1:8082 --namespace models POD_NAME
+These are protocol fixtures, not claims about real production models. No
+production row is published because no exact production image/model/tokenizer
+tuple was probed during this build. Add one only from a captured doctor report;
+strict policy refuses `UNSAFE` targets. See the
+[compatibility methodology](https://streamweld-docs.satwiksub.chatgpt.site/reference/compatibility/).
+
+## Architecture
+
+```text
+                                 Kubernetes control plane
+                         ┌──────────────────────────────────┐
+                         │ InferenceRoute + DurabilityPolicy│
+                         │ operator + conformance cache     │
+                         └───────────────┬──────────────────┘
+                                         │ snapshots / drain
+                                         ▼
+client ── OpenAI HTTP + SSE ──▶ ┌──────────────────────┐
+                                 │ Streamweld proxy     │
+resume cursor ◀────────────────▶ │ stream + attempts    │
+                                 └──────┬────────┬──────┘
+                                        │        │
+                              commit    │        │ OpenAI-compatible
+                                        ▼        ▼
+                                  ┌─────────┐  ┌─────────────────┐
+                                  │ journal │  │ inference pool  │
+                                  │ memory  │  │ vLLM / SGLang / │
+                                  │ or Redis│  │ TGI / fixtures  │
+                                  └─────────┘  └─────────────────┘
 ```
 
-Do not point an HA pre-stop hook at the proxy ClusterIP: one request reaches
-only one process. Keep the chart NetworkPolicy enabled because Kubernetes HTTP
-lifecycle hooks cannot attach the route-admin bearer token; the operator adds
-that token to its downstream per-proxy drain calls. The optional Pod
-webhook is disabled by default and requires an explicit serving certificate.
-See [`deploy/helm/streamweld/README.md`](deploy/helm/streamweld/README.md) for
-validated install profiles.
+The Go proxy commits complete UTF-8-safe upstream SSE events before publishing
+them. Readers replay and tail independently, so a slow reader cannot block the
+producer. Non-streaming requests use the direct pass-through path with
+journaling disabled. The TypeScript client reconnects one async iterable from
+its exact cursor; the AI SDK package supplies a Vercel AI SDK v5 transport.
 
-### Redis and multi-replica mode
+On producer failure, Streamweld checks migration budget, model version,
+chat-template verdict, request shape, token budget, structured-output prefix,
+and tool-call boundaries. A successful continuation removes only the bounded
+UTF-8-safe seam overlap. A failed predicate becomes a visible warning and
+terminal `migration_refused`, never a silent restart.
 
-The default memory journal is bounded, process-local, and supports exactly one
-proxy replica. A process restart loses its journals and idempotency bindings.
-Do not place multiple memory-mode proxies behind a load balancer, even with
-sticky sessions.
+The normative surface is in [`docs/protocol.md`](docs/protocol.md); operational
+details are in [`docs/operations.md`](docs/operations.md), and TypeScript usage
+is in [`docs/client.md`](docs/client.md).
 
-For cross-replica resume, run Redis and configure every proxy replica with the
-same URL and a deployment-unique key prefix:
+## Configuration
 
-```sh
-go run ./cmd/streamweld-proxy \
-  --backend http://127.0.0.1:8000 \
-  --journal-backend redis \
-  --redis-url redis://127.0.0.1:6379/0 \
-  --redis-key-prefix streamweld
-```
+| Helm value | Default | Meaning |
+|---|---:|---|
+| `proxy.replicaCount` | `1` | Requires Redis before it can exceed one |
+| `journal.backend` | `memory` | Use `redis` for shared cross-replica durability |
+| `journal.ttl` | `10m` | Terminal journal and idempotency retention |
+| `journal.maxBytesPerStream` | `4194304` | Memory ring cap per stream |
+| `journal.maxTotalBytes` | `268435456` | Memory journal global cap |
+| `reader.maxLagBytes` | `1048576` | Independent reader backlog before eviction |
+| `reader.writeTimeout` | `30s` | Downstream write/flush deadline |
+| `migration.maxMigrations` | `3` | Continuation-attempt budget |
+| `migration.maxTokens` | `8192` | Accepted-token limit before migration refusal |
+| `migration.maxStreamDuration` | `15m` | Stream-age limit before migration refusal |
+| `migration.allowCrossVersion` | `false` | Permit target model-version mismatch |
+| `migration.allowStructuredResume` | `false` | Permit validated structured-prefix continuation |
+| `migration.seamWindowBytes` | `64` | Maximum overlap-reconciliation window |
+| `migration.templateMode` | `strict` | Required conformance verdict |
+| `orphan.policy` | `continue` | Behavior when the last reader detaches |
+| `orphan.timeout` | `60s` | Grace period for `cancel_after` |
 
-Redis alone lets any replica replay or tail committed events while Redis is
-reachable. For a remote reader to keep receiving an uncommitted suffix if
-Redis fails, every replica must also enable the private owner relay. Production
-relay traffic uses a separate listener with TLS 1.3 mutual authentication; see
-[`docs/operations.md`](docs/operations.md#owner-relay-for-redis-outages) for the
-complete configuration and certificate requirements. The same private relay
-routes an explicit stop to the producer owner when the public request reaches a
-different replica.
+The chart schema rejects unsafe layouts: memory journals cannot scale beyond one
+proxy, Redis mode needs a URL source, and the production owner relay needs mutual
+TLS. See the [full configuration reference](https://streamweld-docs.satwiksub.chatgpt.site/reference/configuration/)
+and [`deploy/helm/streamweld/values.yaml`](deploy/helm/streamweld/values.yaml).
 
-If Redis is unavailable before a stream opens, the request proceeds as a
-non-resumable pass-through response with `X-Streamweld-Durability: degraded`
-and no stream ID. If Redis disappears after a durable stream opens, readers
-already attached to the producer owner's bounded local feed—including readers
-already connected through its relay—receive an always-visible
-`journal_degraded` warning and the remaining complete SSE events without
-sequence IDs. That suffix and its terminal outcome cannot be replayed, even if
-Redis later recovers. A new remote reader cannot discover the owner while
-Redis is unavailable.
+The Terraform demo creates a small CPU system pool plus on-demand and real Spot
+GPU pools. It incurs GKE control-plane, VM/GPU, disk, and network charges; Spot is
+discounted, not free. Prices and quotas vary, so the module intentionally links
+the official calculators instead of freezing a cost estimate. Review
+[`infra/terraform/README.md`](infra/terraform/README.md), configure remote state,
+and run `terraform destroy` when finished. The project, billing setup, API
+enablement, quota, and versioned state bucket are documented prerequisites
+outside that destroy boundary.
 
-The Phase 5 Redis and outage acceptance commands are documented in
-[`docs/operations.md`](docs/operations.md#reproduce-the-phase-5-acceptance-tests).
+## Non-goals
 
-Streamweld is licensed under Apache-2.0.
+- **Not an inference engine.** vLLM, SGLang, and TGI execute models; Streamweld
+  remains an OpenAI-compatible layer in front of them.
+- **Not a scheduler, autoscaler, or GPU placement system.** It can coexist with
+  Kueue, KEDA, llm-d, or a cache-aware router.
+- **Not a KV-cache migration system.** Continuation can re-bill prompt tokens;
+  the metrics make that cost explicit.
+- **Not a general gateway.** Provider catalogs, authentication, tenant RBAC,
+  quotas, billing, and cost controls are outside protocol v1.
+- **Not a semantic repair engine.** It refuses unsafe tool, structured-output,
+  template, or request-shape boundaries and cannot make stochastic sampling
+  bit-for-bit deterministic.
+- **Not a model-quality benchmark product.** The chaos harness exists to prove
+  Streamweld protocol correctness under injected failures.
+- **Not durably multi-replica without external state.** Memory mode is
+  single-process; Redis loss is surfaced as explicit, non-resumable degradation.
+
+Apache-2.0 licensed. See [`CONTRIBUTING.md`](CONTRIBUTING.md),
+[`SECURITY.md`](SECURITY.md), and the scoped
+[`good-first-issue` candidates](docs/good-first-issues.md).

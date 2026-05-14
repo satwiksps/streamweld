@@ -53,7 +53,7 @@ Then start an OpenAI-compatible request:
 ```sh
 curl -N http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"deterministic","messages":[{"role":"user","content":"Count steadily."}],"stream":true}'
+  -d '{"model":"streamweld/deterministic-vllm","messages":[{"role":"user","content":"Count steadily."}],"max_tokens":512,"stream":true}'
 ```
 
 The response includes `X-Streamweld-Stream-Id` and numbered SSE events. A
@@ -66,10 +66,10 @@ Keep the request running and, from another terminal, delete one selected
 backend Pod:
 
 ```sh
-kubectl delete pod -n streamweld-system \
+POD_TO_KILL=$(kubectl -n streamweld-system get pods \
   -l app.kubernetes.io/name=streamweld-sample-backend \
-  --field-selector=status.phase=Running \
-  --wait=false
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl -n streamweld-system delete pod "$POD_TO_KILL" --wait=false
 ```
 
 The `curl` process remains attached to the same logical stream. The proxy
