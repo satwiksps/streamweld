@@ -21,16 +21,8 @@ func TestPassthroughTTFTOverheadBudget(t *testing.T) {
 	const (
 		warmupSamples = 40
 		measurements  = 300
-		targetBudget  = 5 * time.Millisecond
 	)
-	budget := targetBudget
-	if runtime.GOOS == "windows" {
-		// The Windows loopback scheduler regularly contributes a 10-16ms tail
-		// even when the proxy work remains below the cross-platform target. CI
-		// enforces the normative 5ms gate on Linux; keep the local gate useful
-		// without making it a timer-quantum lottery.
-		budget = 20 * time.Millisecond
-	}
+	budget := passthroughLatencyBudget()
 
 	releases := releaseRegistry{}
 	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -154,6 +146,115 @@ func TestPassthroughTTFTOverheadBudget(t *testing.T) {
 	if overheadP99 >= budget {
 		t.Fatalf("passthrough TTFT p99 overhead %s exceeds %s budget", overheadP99, budget)
 	}
+}
+
+func TestNonStreamingPassthroughLatencyOverheadBudget(t *testing.T) {
+	const (
+		warmupSamples = 40
+		measurements  = 300
+		responseBody  = `{"id":"chatcmpl-latency","choices":[{"message":{"role":"assistant","content":"done"}}]}`
+	)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/health" {
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, responseBody)
+	}))
+	t.Cleanup(backend.Close)
+
+	cfg := DefaultConfig()
+	cfg.BackendURL = backend.URL
+	cfg.ListenAddress = "127.0.0.1:0"
+	server, err := NewServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewServer(): %v", err)
+	}
+	t.Cleanup(server.closeIdleConnections)
+	frontend := httptest.NewServer(server.Handler())
+	t.Cleanup(frontend.Close)
+
+	transport := &http.Transport{
+		Proxy:               nil,
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     time.Second,
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+
+	measure := func(baseURL string) time.Duration {
+		request, requestErr := http.NewRequestWithContext(
+			context.Background(),
+			http.MethodPost,
+			baseURL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"fixture","stream":false}`),
+		)
+		if requestErr != nil {
+			t.Fatalf("create non-streaming timing request: %v", requestErr)
+		}
+		request.Header.Set("Content-Type", "application/json")
+
+		started := time.Now()
+		response, requestErr := client.Do(request)
+		if requestErr != nil {
+			t.Fatalf("non-streaming timing request: %v", requestErr)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		elapsed := time.Since(started)
+		if readErr != nil {
+			t.Fatalf("read non-streaming timing response: %v", readErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close non-streaming timing response: %v", closeErr)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("non-streaming timing status = %d, want 200", response.StatusCode)
+		}
+		if string(body) != responseBody {
+			t.Fatalf("non-streaming response = %q, want %q", body, responseBody)
+		}
+		return elapsed
+	}
+
+	for range warmupSamples {
+		_ = measure(backend.URL)
+		_ = measure(frontend.URL)
+	}
+
+	directSamples := make([]time.Duration, 0, measurements)
+	proxySamples := make([]time.Duration, 0, measurements)
+	for index := range measurements {
+		if index%2 == 0 {
+			directSamples = append(directSamples, measure(backend.URL))
+			proxySamples = append(proxySamples, measure(frontend.URL))
+		} else {
+			proxySamples = append(proxySamples, measure(frontend.URL))
+			directSamples = append(directSamples, measure(backend.URL))
+		}
+	}
+
+	directP99 := percentile99(directSamples)
+	proxyP99 := percentile99(proxySamples)
+	overheadP99 := max(time.Duration(0), proxyP99-directP99)
+	t.Logf("loopback non-streaming p99: direct=%s proxy=%s added=%s across %d requests per path", directP99, proxyP99, overheadP99, measurements)
+	if overheadP99 >= passthroughLatencyBudget() {
+		t.Fatalf("non-streaming p99 overhead %s exceeds %s budget", overheadP99, passthroughLatencyBudget())
+	}
+}
+
+func passthroughLatencyBudget() time.Duration {
+	if runtime.GOOS == "windows" {
+		// The Windows loopback scheduler regularly contributes a 10-16ms tail
+		// even when the proxy work remains below the cross-platform target. CI
+		// enforces the normative 5ms gate on Linux; keep the local gate useful
+		// without making it a timer-quantum lottery.
+		return 20 * time.Millisecond
+	}
+	return 5 * time.Millisecond
 }
 
 func percentile99(samples []time.Duration) time.Duration {
