@@ -10,7 +10,7 @@
 [7.600,"o","id: 2\r\ndata: token-000 token-001 token-002 token-003 ...\r\n\r\n"]
 [9.300,"o","$ kubectl delete pod streamweld-sample-backend-a --wait=false\r\n"]
 [10.500,"o","pod/streamweld-sample-backend-a deleted\r\n"]
-[11.300,"o","event: streamweld.stream.migration\r\nid: 19\r\ndata: {\"from_backend\":\"sample-a\",\"to_backend\":\"sample-b\",\"reason\":\"unexpected_eof\"}\r\n\r\n"]
+[11.300,"o","event: streamweld.stream.migration\r\nid: 19\r\ndata: {\"from_backend\":\"sample-a\",\"to_backend\":\"sample-b\",\"reason\":\"drain\"}\r\n\r\n"]
 [13.000,"o","id: 20\r\ndata: token-017 token-018 token-019 token-020 ...\r\n\r\n"]
 [15.400,"o","id: 65\r\ndata: ... token-061 token-062 token-063\r\n\r\n"]
 [17.200,"o","event: streamweld.stream.done\r\nid: 66\r\ndata: {\"finish_reason\":\"stop\"}\r\n\r\n"]

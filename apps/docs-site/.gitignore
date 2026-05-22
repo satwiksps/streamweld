@@ -5,6 +5,7 @@ dist/
 astro-dist/
 .wrangler/
 .vscode/
+src/content/docs/source/
 
 # dependencies
 node_modules/

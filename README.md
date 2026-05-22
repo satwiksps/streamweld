@@ -52,30 +52,35 @@ continuation proof does not hold.
 
 ## Quickstart
 
-Prerequisites: Kubernetes 1.27 or newer, Helm 3.14 or newer, and `kubectl`.
-Tagged releases install from the OCI chart:
+Prerequisites: Kubernetes 1.27 or newer, Helm 3.14 or newer, `kubectl`, and
+Git. Clone the same release tag used by the chart so the sample manifests and
+the installed binaries cannot drift:
+
+```sh
+git clone --depth 1 --branch v0.1.0 https://github.com/streamweld/streamweld.git
+cd streamweld
+```
+
+Install the tagged OCI chart:
 
 ```sh
 helm upgrade --install streamweld oci://ghcr.io/streamweld/charts/streamweld \
   --namespace streamweld-system \
-  --create-namespace
-```
-
-From a source checkout before the first tagged release, use the local chart:
-
-```sh
-helm upgrade --install streamweld ./deploy/helm/streamweld \
-  --namespace streamweld-system \
-  --create-namespace
+  --create-namespace \
+  --version 0.1.0 \
+  --wait --timeout 3m
 ```
 
 Apply the deterministic CPU-only OpenAI fixture and Streamweld policy:
 
 ```sh
 kubectl apply -f deploy/samples/
-kubectl -n streamweld-system wait --for=condition=Available \
-  deployment/streamweld-proxy deployment/streamweld-operator \
-  deployment/streamweld-sample-backend --timeout=180s
+kubectl -n streamweld-system scale deployment/streamweld-sample-backend --replicas=1
+kubectl -n streamweld-system rollout status deployment/streamweld-sample-backend --timeout=180s
+kubectl -n streamweld-system wait inferenceroute/deterministic-vllm \
+  --for=condition=Ready --timeout=180s
+kubectl -n streamweld-system wait inferenceroute/deterministic-vllm \
+  --for=jsonpath='{.status.healthyBackends}'=1 --timeout=180s
 ```
 
 Port-forward the proxy in one terminal:
@@ -89,17 +94,22 @@ Start a long deterministic stream in a second terminal:
 ```sh
 curl -N http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"streamweld/deterministic-vllm","messages":[{"role":"user","content":"Count steadily."}],"max_tokens":512,"stream":true}'
+  -d '{"model":"streamweld/deterministic-vllm","messages":[{"role":"user","content":"Count steadily."}],"max_tokens":2048,"stream":true}'
 ```
 
-While `curl` is printing, delete exactly one serving backend from a third
-terminal:
+While `curl` is printing, add a continuation target, wait until the operator
+admits it, then delete the older Pod: the only backend that existed when the
+request began.
 
 ```sh
-POD_TO_KILL=$(kubectl -n streamweld-system get pods \
+ORIGIN_POD=$(kubectl -n streamweld-system get pods \
   -l app.kubernetes.io/name=streamweld-sample-backend \
   -o jsonpath='{.items[0].metadata.name}')
-kubectl -n streamweld-system delete pod "$POD_TO_KILL" --wait=false
+kubectl -n streamweld-system scale deployment/streamweld-sample-backend --replicas=2
+kubectl -n streamweld-system rollout status deployment/streamweld-sample-backend --timeout=180s
+kubectl -n streamweld-system wait inferenceroute/deterministic-vllm \
+  --for=jsonpath='{.status.healthyBackends}'=2 --timeout=180s
+kubectl -n streamweld-system delete pod "$ORIGIN_POD" --wait=false
 ```
 
 The same `curl` remains attached while the proxy records a migration and
@@ -107,6 +117,12 @@ continues on the other compatible backend. The fixture is for protocol and
 rollout validation, not a production-model compatibility or performance claim.
 See the [ten-minute guide](https://streamweld-docs.satwiksub.chatgpt.site/getting-started/)
 for teardown and the release/source distinction.
+
+Tear down every resource created by the walkthrough with one command:
+
+```sh
+kubectl delete namespace streamweld-system
+```
 
 <!-- streamweld:benchmarks:start -->
 ## Local chaos model (simulation) results

@@ -58,6 +58,22 @@ export default defineConfig({
 					],
 				},
 				{
+					label: 'Repository source',
+					collapsed: true,
+					items: [
+						{ label: 'Normative protocol', slug: 'source/protocol' },
+						{ label: 'Operations guide', slug: 'source/operations' },
+						{ label: 'Client guide', slug: 'source/client' },
+						{ label: 'Generated chaos evidence', slug: 'source/benchmarks' },
+						{ label: 'Good first issues', slug: 'source/good-first-issues' },
+					],
+				},
+				{
+					label: 'Architecture decisions',
+					collapsed: true,
+					items: [{ autogenerate: { directory: 'source/decisions' } }],
+				},
+				{
 					label: 'Evidence and reference',
 					items: [
 						{ label: 'Configuration', slug: 'reference/configuration' },

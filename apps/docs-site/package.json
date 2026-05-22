@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "astro dev",
-    "start": "astro dev",
-    "build": "astro build && vite build --config vite.config.ts",
-    "build:astro": "astro build",
+    "dev": "node ./scripts/sync-source-docs.mjs && astro dev",
+    "start": "node ./scripts/sync-source-docs.mjs && astro dev",
+    "build": "node ./scripts/sync-source-docs.mjs && astro build && vite build --config vite.config.ts",
+    "build:astro": "node ./scripts/sync-source-docs.mjs && astro build",
     "preview": "vite preview --config vite.config.ts",
     "astro": "astro"
   },
