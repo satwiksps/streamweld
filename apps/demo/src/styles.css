@@ -102,6 +102,9 @@ input {
 
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .panel-heading h2 { margin: 0; color: #eef4f8; font-size: 1rem; font-weight: 600; letter-spacing: -0.02em; }
+.simulation-notice { margin-bottom: 1rem; border: 1px solid rgba(217, 155, 63, 0.24); border-radius: 0.7rem; background: rgba(87, 59, 20, 0.14); padding: 0.72rem 0.8rem; color: #b9c6ce; font-size: 0.7rem; line-height: 1.5; }
+.simulation-notice strong { display: block; margin-bottom: 0.2rem; color: #e8ba6f; font-size: 0.65rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.simulation-notice span { display: block; }
 .chat-space { display: flex; min-height: 390px; flex-direction: column; gap: 1rem; padding: 1rem 0; }
 .message { max-width: 86%; border-radius: 0.9rem; padding: 0.9rem 1rem; font-size: 0.9rem; line-height: 1.65; }
 .message-user { align-self: flex-end; border: 1px solid rgba(115, 136, 157, 0.14); background: #19212a; color: #cad5df; }

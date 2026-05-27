@@ -51,10 +51,10 @@ const controls: ReadonlyArray<{
   readonly tone: string;
   readonly glyph: string;
 }> = [
-  { scenario: "pod-kill", label: "Kill serving pod", meta: "SIGKILL", tone: "danger", glyph: "×" },
-  { scenario: "rolling-update", label: "Rolling update", meta: "v2 model", tone: "warm", glyph: "↻" },
-  { scenario: "spot-reclaim", label: "Spot reclaim", meta: "cordon + drain", tone: "warm", glyph: "↘" },
-  { scenario: "client-drop", label: "Drop client", meta: "TCP close", tone: "cool", glyph: "⌁" },
+  { scenario: "pod-kill", label: "Simulate pod kill", meta: "simulated SIGKILL", tone: "danger", glyph: "×" },
+  { scenario: "rolling-update", label: "Simulate rolling update", meta: "simulated v2", tone: "warm", glyph: "↻" },
+  { scenario: "spot-reclaim", label: "Simulate spot reclaim", meta: "simulated drain", tone: "warm", glyph: "↘" },
+  { scenario: "client-drop", label: "Simulate client drop", meta: "simulated TCP close", tone: "cool", glyph: "⌁" },
   { scenario: "explicit-stop", label: "Press stop", meta: "explicit cancel", tone: "neutral", glyph: "■" },
 ];
 
@@ -453,7 +453,10 @@ function App() {
               <div><p className="eyebrow">Failure injection</p><h2>Break something</h2></div>
               <span className={canInject ? "armed-badge" : "armed-badge disarmed"}>{canInject ? "Armed" : "Waiting"}</span>
             </div>
-            <p className="mb-4 text-sm leading-6 text-slate-400">Inject a lifecycle failure while the answer streams. Every control calls the demo backend; durability decides what the reader sees.</p>
+            <div className="simulation-notice">
+              <strong>Protocol simulation</strong>
+              <span>No Kubernetes process, Pod, or node is killed here. These controls ask a deterministic Worker to emit the same protocol transitions; nightly kind CI is the physical failure gate.</span>
+            </div>
             <div className="failure-grid">
               {controls.map((control) => (
                 <button
@@ -489,7 +492,7 @@ function App() {
             <span className="mono text-xs text-slate-500">{durableMode ? "sequenced journal" : "raw socket"}</span>
           </div>
           {timeline.length === 0 ? (
-            <p className="timeline-empty">Timeline events appear here with their real cursor, backend, migration, seam, and resume details.</p>
+            <p className="timeline-empty">Timeline events appear here with their actual simulated cursor, backend, migration, seam, and resume details.</p>
           ) : (
             <div className="timeline-scroll">
               <ol className="timeline-events">
@@ -505,7 +508,7 @@ function App() {
             </div>
           )}
         </section>
-        <p className="demo-note">Deterministic demo backend · no GPU or API key required · toggle off to expose the failure</p>
+        <p className="demo-note">Protocol simulation · no Kubernetes disruption · no GPU or API key required · toggle off to expose the failure</p>
       </div>
     </main>
   );
