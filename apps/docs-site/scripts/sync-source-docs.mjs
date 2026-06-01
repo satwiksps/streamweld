@@ -1,9 +1,11 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const docsSiteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repositoryRoot = path.resolve(docsSiteRoot, '..', '..');
+const monorepoRoot = path.resolve(docsSiteRoot, '..', '..');
+const sourceSnapshotRoot = path.join(docsSiteRoot, '.repository');
+const repositoryRoot = await containsSourceDocuments(monorepoRoot) ? monorepoRoot : sourceSnapshotRoot;
 const outputRoot = path.join(docsSiteRoot, 'src', 'content', 'docs', 'source');
 
 const documents = [
@@ -52,4 +54,14 @@ async function renderSourceDocument(source, destination, fallbackTitle) {
 	const destinationPath = path.join(outputRoot, ...destination.split('/'));
 	await mkdir(path.dirname(destinationPath), { recursive: true });
 	await writeFile(destinationPath, generated, 'utf8');
+}
+
+async function containsSourceDocuments(candidate) {
+	try {
+		await access(path.join(candidate, 'docs', 'protocol.md'));
+		await access(path.join(candidate, 'benchmarks', 'results.md'));
+		return true;
+	} catch {
+		return false;
+	}
 }
