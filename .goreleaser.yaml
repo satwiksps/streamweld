@@ -1,0 +1,161 @@
+version: 2
+
+project_name: streamweld
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: streamweld-proxy
+    main: ./cmd/streamweld-proxy
+    binary: streamweld-proxy
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "946684800"
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/streamweld/streamweld/internal/version.Version={{ .Version }}
+        -X github.com/streamweld/streamweld/internal/version.Commit={{ .Commit }}
+        -X github.com/streamweld/streamweld/internal/version.Date={{ .CommitDate }}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: streamweld-operator
+    main: ./cmd/streamweld-operator
+    binary: streamweld-operator
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "946684800"
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/streamweld/streamweld/internal/version.Version={{ .Version }}
+        -X github.com/streamweld/streamweld/internal/version.Commit={{ .Commit }}
+        -X github.com/streamweld/streamweld/internal/version.Date={{ .CommitDate }}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: streamweldctl
+    main: ./cmd/streamweldctl
+    binary: streamweldctl
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "946684800"
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/streamweld/streamweld/internal/version.Version={{ .Version }}
+        -X github.com/streamweld/streamweld/internal/version.Commit={{ .Commit }}
+        -X github.com/streamweld/streamweld/internal/version.Date={{ .CommitDate }}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: streamweld-proxy
+    ids:
+      - streamweld-proxy
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      streamweld-proxy_{{ .Version }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    builds_info:
+      mtime: "2000-01-01T00:00:00Z"
+    files:
+      - src: LICENSE
+        info:
+          mtime: "2000-01-01T00:00:00Z"
+      - src: README.md
+        info:
+          mtime: "2000-01-01T00:00:00Z"
+
+  - id: streamweld-operator
+    ids:
+      - streamweld-operator
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      streamweld-operator_{{ .Version }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    builds_info:
+      mtime: "2000-01-01T00:00:00Z"
+    files:
+      - src: LICENSE
+        info:
+          mtime: "2000-01-01T00:00:00Z"
+      - src: README.md
+        info:
+          mtime: "2000-01-01T00:00:00Z"
+
+  - id: streamweldctl
+    ids:
+      - streamweldctl
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      streamweldctl_{{ .Version }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    builds_info:
+      mtime: "2000-01-01T00:00:00Z"
+    files:
+      - src: LICENSE
+        info:
+          mtime: "2000-01-01T00:00:00Z"
+      - src: README.md
+        info:
+          mtime: "2000-01-01T00:00:00Z"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^Merge '
+
+release:
+  github:
+    owner: streamweld
+    name: streamweld
+  draft: true
+  prerelease: auto
+  mode: replace

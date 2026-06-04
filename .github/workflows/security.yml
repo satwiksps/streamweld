@@ -13,54 +13,61 @@ permissions:
   security-events: write
 
 jobs:
-  languages:
-    name: Detect CodeQL languages
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.detect.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v6.0.2
-      - id: detect
-        shell: bash
-        run: |
-          if find packages apps -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) -print -quit 2>/dev/null | grep -q .; then
-            echo 'matrix={"language":["go","javascript-typescript"]}' >> "$GITHUB_OUTPUT"
-          else
-            echo 'matrix={"language":["go"]}' >> "$GITHUB_OUTPUT"
-          fi
-
   codeql:
     name: CodeQL (${{ matrix.language }})
-    needs: languages
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+      matrix:
+        language:
+          - go
+          - javascript-typescript
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
       - uses: github/codeql-action/autobuild@v4
       - uses: github/codeql-action/analyze@v4
 
   trivy:
-    name: Trivy filesystem scan
+    name: Trivy image (${{ matrix.target }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - proxy
+          - operator
     steps:
       - uses: actions/checkout@v6.0.2
-      - uses: aquasecurity/trivy-action@v0.36.0
+      - uses: docker/setup-buildx-action@v4.1.0
+      - id: build
+        uses: docker/build-push-action@v7.2.0
         with:
-          scan-type: fs
-          scan-ref: .
+          context: .
+          target: ${{ matrix.target }}
+          load: true
+          push: false
+          tags: streamweld-${{ matrix.target }}:security-scan
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=security-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=security-${{ matrix.target }}
+      - uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: streamweld-${{ matrix.target }}:security-scan
           format: sarif
-          output: trivy-results.sarif
+          output: trivy-${{ matrix.target }}.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
-      - if: always()
+      - if: always() && steps.build.outcome == 'success'
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: trivy-${{ matrix.target }}.sarif
+          category: trivy-${{ matrix.target }}

@@ -1,0 +1,325 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed release tag to validate and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: true
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+  RELEASE_GO_VERSION: 1.26.5
+
+jobs:
+  quality:
+    name: Release quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      minor: ${{ steps.release.outputs.minor }}
+      npm_tag: ${{ steps.release.outputs.npm_tag }}
+      commit: ${{ steps.release.outputs.commit }}
+      commit_date: ${{ steps.release.outputs.commit_date }}
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      STREAMWELD_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ env.RELEASE_GO_VERSION }}
+          cache: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: azure/setup-helm@v4.3.1
+        with:
+          version: v4.0.0
+      - uses: hashicorp/setup-terraform@v4.0.1
+      - uses: terraform-linters/setup-tflint@v6.3.0
+        with:
+          tflint_version: v0.64.0
+          tflint_config_path: infra/terraform/.tflint.hcl
+          cache: true
+      - id: release
+        name: Verify release versions
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          version="$(node scripts/verify-release-version.mjs "$RELEASE_TAG")"
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$tag_commit" != "$head_commit" ]]; then
+            echo "checked-out commit $head_commit does not match $RELEASE_TAG ($tag_commit)" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          base_version="${version%%-*}"
+          echo "minor=${base_version%.*}" >> "$GITHUB_OUTPUT"
+          echo "commit=$head_commit" >> "$GITHUB_OUTPUT"
+          echo "commit_date=$(git show --no-show-signature -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+      - run: go mod download
+      - run: pnpm install --frozen-lockfile
+      - name: Test Go with the race detector
+        run: make test-go GO_TEST_FLAGS=-race
+      - run: make vet build-go bench-check
+      - run: make typecheck test-ts build-ts docs-build
+      - run: make helm-lint terraform-validate terraform-lint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+      - uses: goreleaser/goreleaser-action@v7.2.0
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: check
+
+  binaries:
+    name: GoReleaser binaries
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.quality.outputs.commit }}
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ env.RELEASE_GO_VERSION }}
+          cache: false
+      - uses: goreleaser/goreleaser-action@v7.2.0
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+  images:
+    name: Image (${{ matrix.target }})
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      artifact-metadata: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: proxy
+            image: streamweld-proxy
+            title: Streamweld proxy
+            description: Durable OpenAI-compatible inference stream proxy
+          - target: operator
+            image: streamweld-operator
+            title: Streamweld operator
+            description: Kubernetes control plane for durable inference streams
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ needs.quality.outputs.commit }}
+      - uses: docker/setup-qemu-action@v4.2.0
+      - uses: docker/setup-buildx-action@v4.1.0
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: metadata
+        uses: docker/metadata-action@v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ghcr.io/streamweld/${{ matrix.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.quality.outputs.version }}
+            type=raw,value=${{ needs.quality.outputs.minor }},enable=${{ !contains(needs.quality.outputs.version, '-') }}
+            type=raw,value=latest,enable=${{ !contains(needs.quality.outputs.version, '-') }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=https://github.com/streamweld/streamweld
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.version=${{ needs.quality.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.quality.outputs.commit }}
+            org.opencontainers.image.created=${{ needs.quality.outputs.commit_date }}
+          annotations: |
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=https://github.com/streamweld/streamweld
+      - id: push
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          annotations: ${{ steps.metadata.outputs.annotations }}
+          build-args: |
+            VERSION=${{ needs.quality.outputs.version }}
+            COMMIT=${{ needs.quality.outputs.commit }}
+            DATE=${{ needs.quality.outputs.commit_date }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=release-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.target }}
+      - uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/streamweld/${{ matrix.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  helm:
+    name: Helm OCI chart
+    needs:
+      - quality
+      - images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ needs.quality.outputs.commit }}
+      - uses: azure/setup-helm@v4.3.1
+        with:
+          version: v4.0.0
+      - name: Package chart
+        run: |
+          mkdir -p "${RUNNER_TEMP}/helm"
+          helm package deploy/helm/streamweld \
+            --destination "${RUNNER_TEMP}/helm" \
+            --version "${{ needs.quality.outputs.version }}" \
+            --app-version "${{ needs.quality.outputs.version }}"
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+      - name: Push chart
+        run: helm push "${RUNNER_TEMP}/helm/streamweld-${{ needs.quality.outputs.version }}.tgz" oci://ghcr.io/streamweld/charts
+
+  npm:
+    name: npm packages with provenance
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_CONFIG_PROVENANCE: "true"
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ needs.quality.outputs.commit }}
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.19.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @streamweld/client --filter @streamweld/ai-sdk run build
+      - name: Pack registry-safe workspace artifacts
+        run: |
+          mkdir -p "${RUNNER_TEMP}/npm"
+          pnpm --dir packages/client pack --pack-destination "${RUNNER_TEMP}/npm"
+          pnpm --dir packages/ai-sdk pack --pack-destination "${RUNNER_TEMP}/npm"
+          test -f "${RUNNER_TEMP}/npm/streamweld-client-${{ needs.quality.outputs.version }}.tgz"
+          test -f "${RUNNER_TEMP}/npm/streamweld-ai-sdk-${{ needs.quality.outputs.version }}.tgz"
+      - name: Publish client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >-
+          npm publish "${RUNNER_TEMP}/npm/streamweld-client-${{ needs.quality.outputs.version }}.tgz"
+          --access public
+          --provenance
+          --tag "${{ needs.quality.outputs.npm_tag }}"
+      - name: Publish AI SDK adapter
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >-
+          npm publish "${RUNNER_TEMP}/npm/streamweld-ai-sdk-${{ needs.quality.outputs.version }}.tgz"
+          --access public
+          --provenance
+          --tag "${{ needs.quality.outputs.npm_tag }}"
+
+  publish-release:
+    name: Publish GitHub release
+    needs:
+      - quality
+      - binaries
+      - images
+      - helm
+      - npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.quality.outputs.commit }}
+      - name: Verify the release tag is still immutable
+        env:
+          EXPECTED_COMMIT: ${{ needs.quality.outputs.commit }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          git fetch --force --no-tags origin "+refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$EXPECTED_COMMIT"
+      - name: Publish the completed draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --repo "$GITHUB_REPOSITORY"

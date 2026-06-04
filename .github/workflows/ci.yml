@@ -43,8 +43,23 @@ jobs:
       - run: go mod download
       - name: Test with race detector
         run: make test-go GO_TEST_FLAGS=-race
+      - name: Run the committed SSE fuzz seeds
+        run: go test -race ./internal/proxy/sse -run=Fuzz -count=1
       - run: make vet
       - run: make build-go
+
+  bench-check:
+    name: Benchmark correctness gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go mod download
+      - run: make bench-check
 
   golangci-lint:
     name: Go lint
@@ -86,29 +101,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6.0.2
-      - id: suite
-        name: Detect the e2e suite
-        shell: bash
-        run: |
-          if test -d test/e2e && find test/e2e -type f -name '*_test.go' -print -quit | grep -q .; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "The e2e suite is not present in this build phase."
-          fi
-      - if: steps.suite.outputs.enabled == 'true'
-        uses: actions/setup-go@v7.0.0
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache: false
-      - if: steps.suite.outputs.enabled == 'true'
-        uses: azure/setup-helm@v4.3.1
+      - uses: azure/setup-helm@v4.3.1
         with:
           version: v4.0.0
-      - if: steps.suite.outputs.enabled == 'true'
-        uses: helm/kind-action@v1.14.0
-      - if: steps.suite.outputs.enabled == 'true'
-        run: make e2e
+      - uses: helm/kind-action@v1.14.0
+        with:
+          install_only: true
+      - run: make e2e
 
   packaging:
     name: Helm and Terraform
@@ -116,25 +119,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6.0.2
-      - id: inputs
-        name: Detect packaging inputs
-        shell: bash
-        run: |
-          test -f deploy/helm/streamweld/Chart.yaml && echo "helm=true" >> "$GITHUB_OUTPUT" || echo "helm=false" >> "$GITHUB_OUTPUT"
-          if test -d infra/terraform && find infra/terraform -type f -name '*.tf' -print -quit | grep -q .; then
-            echo "terraform=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "terraform=false" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.inputs.outputs.helm == 'true'
-        uses: azure/setup-helm@v4.3.1
+      - uses: azure/setup-helm@v4.3.1
         with:
           version: v4.0.0
-      - if: steps.inputs.outputs.helm == 'true'
-        run: make helm-lint
-      - if: steps.inputs.outputs.terraform == 'true'
-        uses: hashicorp/setup-terraform@v4.0.1
-      - if: steps.inputs.outputs.terraform == 'true'
-        uses: terraform-linters/setup-tflint@v6
-      - if: steps.inputs.outputs.terraform == 'true'
-        run: make terraform-validate terraform-lint
+      - uses: hashicorp/setup-terraform@v4.0.1
+      - uses: terraform-linters/setup-tflint@v6.3.0
+        with:
+          tflint_version: v0.64.0
+          tflint_config_path: infra/terraform/.tflint.hcl
+          cache: true
+      - run: make helm-lint terraform-validate terraform-lint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
