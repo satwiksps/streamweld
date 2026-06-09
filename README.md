@@ -52,6 +52,12 @@ continuation proof does not hold.
 
 ## Quickstart
 
+> **Pre-release status:** the canonical GitHub repository, GHCR images/chart,
+> and npm packages are not public at this source revision. The pinned `v0.1.0`
+> flow below is the release acceptance path; it becomes runnable only after
+> those artifacts are published. Contributors with Docker can run `make e2e`
+> against a local kind cluster in the meantime.
+
 Prerequisites: Kubernetes 1.27 or newer, Helm 3.14 or newer, `kubectl`, and
 Git. Clone the same release tag used by the chart so the sample manifests and
 the installed binaries cannot drift:

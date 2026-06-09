@@ -5,6 +5,14 @@ description: Install Streamweld, start the deterministic sample backend, and ope
 
 ## Prerequisites
 
+:::caution[Pre-release status]
+The canonical GitHub repository, GHCR images/chart, and npm packages are not
+public at this source revision. The pinned `v0.1.0` flow below is the release
+acceptance path and becomes runnable only after those artifacts are published.
+Contributors with Docker can run `make e2e` against a local kind cluster in the
+meantime.
+:::
+
 - Kubernetes 1.27 or newer
 - Helm 3.14 or newer
 - `kubectl`
