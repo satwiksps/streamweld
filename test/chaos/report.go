@@ -21,7 +21,7 @@ import (
 // Supported failure-injection scenarios.
 const (
 	// SchemaVersion changes when the committed result contract changes.
-	SchemaVersion = "streamweld.benchmarks/v1"
+	SchemaVersion = "streamweld.benchmarks/v2"
 	// DefaultConcurrentStreams is deliberately small enough for laptops and CI.
 	DefaultConcurrentStreams = 8
 	// DefaultOutputTokens is the length of every deterministic generation.
@@ -30,7 +30,15 @@ const (
 	DeterministicPromptTokens = 16
 	// DeterministicSeamWindowBytes matches the committed chaos policy.
 	DeterministicSeamWindowBytes = 64
+	// LegacyTerminationGracePeriodSeconds is the comparison budget described in
+	// the operations guidance. It is configuration input, not measured timing.
+	LegacyTerminationGracePeriodSeconds = 300
+	// StreamweldTerminationGracePeriodSeconds is the managed backend target.
+	// It is configuration input, not measured timing.
+	StreamweldTerminationGracePeriodSeconds = 15
 )
+
+const localRolloutMeasurementScope = "amortized monotonic wall-clock mean across a batch of sequential in-process rolling-update cohorts, from before each harness cohort setup through every simulated stream reaching its terminal result; repeated cohorts overcome host clock granularity and include harness overhead; excludes Kubernetes control-plane, scheduling, image-pull, readiness, process-exit, GPU-idle, and cost timing"
 
 // Scenario identifies one required failure injection.
 type Scenario string
@@ -122,12 +130,30 @@ type Result struct {
 	OutputCorrect              bool     `json:"output_correct"`
 }
 
+// RolloutDurationImpact records a measured local migration interval and an
+// explicitly modelled comparison with configured termination-grace budgets.
+// PhysicalKubernetesTiming is false for the committed local profile; the
+// report must not present this interval as a cluster rollout measurement.
+type RolloutDurationImpact struct {
+	Scenario                                   Scenario `json:"scenario"`
+	MeasurementScope                           string   `json:"measurement_scope"`
+	PhysicalKubernetesTiming                   bool     `json:"physical_kubernetes_timing"`
+	MeasurementCohorts                         int      `json:"measurement_cohorts"`
+	MeasuredMeanCohortCompletionMilliseconds   float64  `json:"measured_mean_cohort_completion_ms"`
+	LegacyGracePeriodSeconds                   int      `json:"legacy_grace_period_seconds"`
+	StreamweldGracePeriodSeconds               int      `json:"streamweld_grace_period_seconds"`
+	ConfiguredGraceWindowReductionSeconds      int      `json:"configured_grace_window_reduction_seconds"`
+	ModeledStreamweldGraceHeadroomMilliseconds float64  `json:"modeled_streamweld_grace_headroom_ms"`
+	FitsWithinStreamweldGracePeriod            bool     `json:"fits_within_streamweld_grace_period"`
+}
+
 // Report is the complete benchmark artifact written as JSON and Markdown.
 type Report struct {
-	SchemaVersion string    `json:"schema_version"`
-	GeneratedAt   time.Time `json:"generated_at"`
-	Profile       Profile   `json:"profile"`
-	Results       []Result  `json:"results"`
+	SchemaVersion         string                 `json:"schema_version"`
+	GeneratedAt           time.Time              `json:"generated_at"`
+	Profile               Profile                `json:"profile"`
+	RolloutDurationImpact *RolloutDurationImpact `json:"rollout_duration_impact,omitempty"`
+	Results               []Result               `json:"results"`
 }
 
 // NewProfile constructs metadata for an honestly labelled run.
@@ -295,6 +321,55 @@ func (report Report) Validate() error {
 	for _, definition := range definitions {
 		if _, ok := seen[definition.Scenario]; !ok {
 			problems = append(problems, fmt.Errorf("scenario %q is missing", definition.Scenario))
+		}
+	}
+	if report.Profile.Name == "deterministic-local" && report.RolloutDurationImpact == nil {
+		problems = append(problems, errors.New("rollout_duration_impact is required for the deterministic-local profile"))
+	}
+	if impact := report.RolloutDurationImpact; impact != nil {
+		if impact.Scenario != ScenarioRollingUpdate {
+			problems = append(problems, fmt.Errorf("rollout_duration_impact scenario = %q, want %q", impact.Scenario, ScenarioRollingUpdate))
+		}
+		if impact.MeasurementScope == "" {
+			problems = append(problems, errors.New("rollout_duration_impact measurement_scope is required"))
+		}
+		if report.Profile.Name == "deterministic-local" && impact.MeasurementScope != localRolloutMeasurementScope {
+			problems = append(problems, errors.New("deterministic-local rollout_duration_impact measurement_scope does not match the generated local model"))
+		}
+		if report.Profile.Name == "deterministic-local" && impact.PhysicalKubernetesTiming {
+			problems = append(problems, errors.New("deterministic-local rollout_duration_impact cannot claim physical Kubernetes timing"))
+		}
+		if impact.MeasurementCohorts <= 0 {
+			problems = append(problems, errors.New("rollout_duration_impact measurement_cohorts must be positive"))
+		}
+		if !finiteNonNegative(impact.MeasuredMeanCohortCompletionMilliseconds) ||
+			impact.MeasuredMeanCohortCompletionMilliseconds == 0 {
+			problems = append(problems, errors.New("rollout_duration_impact measured interval must be finite and positive"))
+		}
+		if impact.LegacyGracePeriodSeconds != LegacyTerminationGracePeriodSeconds ||
+			impact.StreamweldGracePeriodSeconds != StreamweldTerminationGracePeriodSeconds {
+			problems = append(problems, errors.New("rollout_duration_impact grace periods do not match the documented 300s and 15s comparison"))
+		}
+		wantReduction := LegacyTerminationGracePeriodSeconds - StreamweldTerminationGracePeriodSeconds
+		if impact.ConfiguredGraceWindowReductionSeconds != wantReduction {
+			problems = append(problems, fmt.Errorf(
+				"rollout_duration_impact configured grace-window reduction = %d, want %d",
+				impact.ConfiguredGraceWindowReductionSeconds,
+				wantReduction,
+			))
+		}
+		wantHeadroom := roundMilliseconds(
+			float64(StreamweldTerminationGracePeriodSeconds*1000) - impact.MeasuredMeanCohortCompletionMilliseconds,
+		)
+		if math.IsNaN(impact.ModeledStreamweldGraceHeadroomMilliseconds) ||
+			math.IsInf(impact.ModeledStreamweldGraceHeadroomMilliseconds, 0) ||
+			math.Abs(impact.ModeledStreamweldGraceHeadroomMilliseconds-wantHeadroom) > 0.0005 {
+			problems = append(problems, errors.New("rollout_duration_impact modeled Streamweld grace headroom is inconsistent with the measured interval"))
+		}
+		wantFits := impact.MeasuredMeanCohortCompletionMilliseconds <=
+			float64(StreamweldTerminationGracePeriodSeconds*1000)
+		if impact.FitsWithinStreamweldGracePeriod != wantFits {
+			problems = append(problems, errors.New("rollout_duration_impact grace-period fit does not match the measured interval"))
 		}
 	}
 	return errors.Join(problems...)

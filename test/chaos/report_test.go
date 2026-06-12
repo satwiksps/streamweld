@@ -49,6 +49,24 @@ func TestReportValidationIsACorrectnessRegressionGate(t *testing.T) {
 	if err := report.Validate(); err == nil || !strings.Contains(err.Error(), "invalid TTFT") {
 		t.Fatalf("zero direct TTFT validation error = %v", err)
 	}
+
+	report = validTestReport(t)
+	report.RolloutDurationImpact = nil
+	if err := report.Validate(); err == nil || !strings.Contains(err.Error(), "rollout_duration_impact is required") {
+		t.Fatalf("missing rollout impact validation error = %v", err)
+	}
+
+	report = validTestReport(t)
+	report.RolloutDurationImpact.PhysicalKubernetesTiming = true
+	if err := report.Validate(); err == nil || !strings.Contains(err.Error(), "cannot claim physical Kubernetes timing") {
+		t.Fatalf("physical timing claim validation error = %v", err)
+	}
+
+	report = validTestReport(t)
+	report.RolloutDurationImpact.ModeledStreamweldGraceHeadroomMilliseconds++
+	if err := report.Validate(); err == nil || !strings.Contains(err.Error(), "headroom is inconsistent") {
+		t.Fatalf("inconsistent grace model validation error = %v", err)
+	}
 }
 
 func TestDecodeReportRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
@@ -87,11 +105,73 @@ func TestArtifactsRoundTripFromOneJSONSource(t *testing.T) {
 	if !strings.Contains(string(markdown), "| pod-kill | 16 | 3 | 3 | 3 |") {
 		t.Fatalf("rendered Markdown omitted matrix counters:\n%s", markdown)
 	}
+	for _, required := range []string{
+		"mean of **0.375 ms per cohort** across 32 sequential",
+		"Configured grace-window reduction | 285 s",
+		"not physical Kubernetes rollout timing",
+	} {
+		if !strings.Contains(string(markdown), required) {
+			t.Errorf("rendered Markdown omitted %q:\n%s", required, markdown)
+		}
+	}
 	if err := os.WriteFile(markdownPath, append(markdown, []byte("manual edit\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := VerifyArtifacts(directory); err == nil || !strings.Contains(err.Error(), "not the canonical rendering") {
 		t.Fatalf("modified Markdown verification error = %v", err)
+	}
+}
+
+func TestOperationsRolloutSectionIsGeneratedAndDriftChecked(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "operations.md")
+	original := "# Operations\n\nKeep the drain guidance.\n\n## Kubernetes operator and route programming\n\nKeep this body.\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report := validTestReport(t)
+	if err := UpdateOperationsRolloutSection(path, report); err != nil {
+		t.Fatalf("UpdateOperationsRolloutSection() error = %v", err)
+	}
+	if err := VerifyOperationsRolloutSection(path, report); err != nil {
+		t.Fatalf("VerifyOperationsRolloutSection() error = %v", err)
+	}
+
+	generated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"Keep the drain guidance.",
+		"Keep this body.",
+		operationsRolloutStart,
+		operationsRolloutEnd,
+		"mean of **0.375 ms per cohort** across 32 sequential",
+		"not physical Kubernetes rollout timing",
+		"../benchmarks/results.json",
+	} {
+		if !strings.Contains(string(generated), required) {
+			t.Errorf("generated operations guide does not contain %q", required)
+		}
+	}
+	if err := UpdateOperationsRolloutSection(path, report); err != nil {
+		t.Fatalf("second UpdateOperationsRolloutSection() error = %v", err)
+	}
+	stable, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stable) != string(generated) {
+		t.Fatal("operations rollout update is not reproducible")
+	}
+
+	drifted := strings.Replace(string(stable), "mean of **0.375 ms per cohort**", "mean of **999 ms per cohort**", 1)
+	if err := os.WriteFile(path, []byte(drifted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyOperationsRolloutSection(path, report); err == nil || !strings.Contains(err.Error(), "drifted") {
+		t.Fatalf("operations rollout drift verification error = %v", err)
 	}
 }
 
@@ -163,11 +243,19 @@ func TestREADMEBenchmarkSectionRejectsMalformedMarkers(t *testing.T) {
 
 func validTestReport(t *testing.T) Report {
 	t.Helper()
+	generatedAt := time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
+	rolloutTimes := []time.Time{generatedAt, generatedAt.Add(12 * time.Millisecond)}
+	rolloutClockIndex := 0
 	report, err := RunLocal(context.Background(), LocalConfig{
 		ConcurrentStreams: 3,
 		OutputTokens:      16,
 		Now: func() time.Time {
-			return time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
+			return generatedAt
+		},
+		RolloutNow: func() time.Time {
+			value := rolloutTimes[rolloutClockIndex]
+			rolloutClockIndex++
+			return value
 		},
 		MeasureTTFT: func(_ context.Context, _ int) (TTFTMeasurement, error) {
 			return TTFTMeasurement{DirectMilliseconds: 1, StreamweldMilliseconds: 2}, nil

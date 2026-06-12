@@ -36,10 +36,17 @@ func TestRunLocalExecutesEveryStreamAndPassesCorrectness(t *testing.T) {
 	t.Parallel()
 
 	generatedAt := time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
+	rolloutTimes := []time.Time{generatedAt, generatedAt.Add(12_500 * time.Microsecond)}
+	rolloutClockIndex := 0
 	report, err := RunLocal(context.Background(), LocalConfig{
 		ConcurrentStreams: 7,
 		OutputTokens:      32,
 		Now:               func() time.Time { return generatedAt },
+		RolloutNow: func() time.Time {
+			value := rolloutTimes[rolloutClockIndex]
+			rolloutClockIndex++
+			return value
+		},
 		MeasureTTFT: func(context.Context, int) (TTFTMeasurement, error) {
 			return TTFTMeasurement{DirectMilliseconds: 1.25, StreamweldMilliseconds: 2.75}, nil
 		},
@@ -52,6 +59,14 @@ func TestRunLocalExecutesEveryStreamAndPassesCorrectness(t *testing.T) {
 	}
 	if !report.GeneratedAt.Equal(generatedAt) || report.Profile.Cluster || report.Profile.ConcurrentStreams != 7 {
 		t.Fatalf("profile metadata = %+v at %s", report.Profile, report.GeneratedAt)
+	}
+	impact := report.RolloutDurationImpact
+	if impact == nil || impact.MeasurementCohorts != 32 ||
+		impact.MeasuredMeanCohortCompletionMilliseconds != 0.391 ||
+		impact.ModeledStreamweldGraceHeadroomMilliseconds != 14_999.609 ||
+		impact.ConfiguredGraceWindowReductionSeconds != 285 ||
+		impact.PhysicalKubernetesTiming || !impact.FitsWithinStreamweldGracePeriod {
+		t.Fatalf("rollout duration impact = %+v", impact)
 	}
 	for _, result := range report.Results {
 		if !result.OutputCorrect || result.CorrectStreams != 7 || result.StreamsStarted != 7 {
@@ -84,6 +99,16 @@ func TestRunLocalRejectsInvalidSettingsAndMeasurements(t *testing.T) {
 		},
 	}); err == nil {
 		t.Fatal("RunLocal() accepted a NaN TTFT measurement")
+	}
+	if _, err := RunLocal(context.Background(), LocalConfig{
+		ConcurrentStreams: 1,
+		OutputTokens:      8,
+		RolloutNow:        func() time.Time { return time.Unix(0, 0) },
+		MeasureTTFT: func(context.Context, int) (TTFTMeasurement, error) {
+			return TTFTMeasurement{DirectMilliseconds: 1, StreamweldMilliseconds: 2}, nil
+		},
+	}); err == nil {
+		t.Fatal("RunLocal() accepted a rollout measurement clock that did not advance")
 	}
 }
 

@@ -12,11 +12,13 @@ import (
 )
 
 const (
-	resultsJSON = "results.json"
-	resultsMD   = "results.md"
-	readmeStart = "<!-- streamweld:benchmarks:start -->"
-	readmeEnd   = "<!-- streamweld:benchmarks:end -->"
-	liveDemoURL = "https://streamweld-failure-lab.satwiksub.chatgpt.site"
+	resultsJSON            = "results.json"
+	resultsMD              = "results.md"
+	readmeStart            = "<!-- streamweld:benchmarks:start -->"
+	readmeEnd              = "<!-- streamweld:benchmarks:end -->"
+	operationsRolloutStart = "<!-- streamweld:rollout-impact:start -->"
+	operationsRolloutEnd   = "<!-- streamweld:rollout-impact:end -->"
+	liveDemoURL            = "https://streamweld-failure-lab.satwiksub.chatgpt.site"
 )
 
 // WriteArtifacts validates and writes both committed benchmark formats from
@@ -103,6 +105,7 @@ func RenderMarkdown(report Report) []byte {
 		report.Profile.TTFTBackendDelayMilliseconds,
 		report.Profile.TTFTSerializationMilliseconds,
 	)
+	writeRolloutDurationImpact(&output, report, "## Local rollout grace-window model\n\n")
 	writeResultTable(&output, report)
 	output.WriteString("\nScenario-specific expected terminals are recorded in the JSON artifact: explicit stop is `stopped`, unsafe-template is `migration_refused`, and Redis loss is `done_degraded`.\n")
 	return []byte(output.String())
@@ -125,10 +128,66 @@ func RenderREADMEBenchmarkSection(report Report) []byte {
 		report.Profile.TTFTBackendDelayMilliseconds,
 		report.Profile.TTFTSerializationMilliseconds,
 	)
+	writeRolloutDurationImpact(&output, report, "")
 	writeResultTable(&output, report)
 	output.WriteString("\nFull metadata and scenario-specific terminal outcomes are in [`benchmarks/results.md`](benchmarks/results.md).\n")
 	output.WriteString(readmeEnd)
 	return []byte(output.String())
+}
+
+// RenderOperationsRolloutSection renders the marker-owned operations evidence.
+func RenderOperationsRolloutSection(report Report) []byte {
+	var output strings.Builder
+	output.WriteString(operationsRolloutStart)
+	output.WriteString("\n### Generated local rollout grace-window model\n\n")
+	writeRolloutDurationImpact(&output, report, "")
+	output.WriteString("The machine-readable source is [`benchmarks/results.json`](../benchmarks/results.json), and its canonical human rendering is [`benchmarks/results.md`](../benchmarks/results.md). Run `make bench` to re-measure and regenerate this block.\n")
+	output.WriteString(operationsRolloutEnd)
+	return []byte(output.String())
+}
+
+// UpdateOperationsRolloutSection inserts or replaces only the generated
+// rollout evidence in docs/operations.md.
+func UpdateOperationsRolloutSection(path string, report Report) error {
+	if err := report.Validate(); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read operations guide: %w", err)
+	}
+	section := RenderOperationsRolloutSection(report)
+	updated, err := replaceOperationsRolloutSection(data, section)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat operations guide: %w", err)
+	}
+	if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("write operations rollout section: %w", err)
+	}
+	return nil
+}
+
+// VerifyOperationsRolloutSection detects drift from the JSON-derived rendering.
+func VerifyOperationsRolloutSection(path string, report Report) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read operations guide: %w", err)
+	}
+	start := bytes.Index(data, []byte(operationsRolloutStart))
+	end := bytes.Index(data, []byte(operationsRolloutEnd))
+	if start < 0 || end < start || bytes.Count(data, []byte(operationsRolloutStart)) != 1 ||
+		bytes.Count(data, []byte(operationsRolloutEnd)) != 1 {
+		return errors.New("operations rollout markers are missing, duplicated, or out of order; run make bench")
+	}
+	end += len(operationsRolloutEnd)
+	if !bytes.Equal(data[start:end], RenderOperationsRolloutSection(report)) {
+		return errors.New("operations rollout section drifted from results.json; run make bench")
+	}
+	return nil
 }
 
 // UpdateREADMEBenchmarkSection inserts or replaces only the marker-owned slice.
@@ -204,6 +263,80 @@ func replaceREADMESection(data, section []byte) ([]byte, error) {
 	updated = append(updated, section...)
 	updated = append(updated, data[end:]...)
 	return updated, nil
+}
+
+func replaceOperationsRolloutSection(data, section []byte) ([]byte, error) {
+	startCount := bytes.Count(data, []byte(operationsRolloutStart))
+	endCount := bytes.Count(data, []byte(operationsRolloutEnd))
+	if startCount == 0 && endCount == 0 {
+		anchor := []byte("\n## Kubernetes operator and route programming")
+		index := bytes.Index(data, anchor)
+		if index < 0 {
+			return nil, errors.New("operations guide has no rollout markers or Kubernetes operator insertion anchor")
+		}
+		updated := make([]byte, 0, len(data)+len(section)+2)
+		updated = append(updated, data[:index]...)
+		updated = append(updated, '\n')
+		updated = append(updated, section...)
+		updated = append(updated, '\n')
+		updated = append(updated, data[index:]...)
+		return updated, nil
+	}
+	if startCount != 1 || endCount != 1 {
+		return nil, errors.New("operations rollout markers must appear exactly once")
+	}
+	start := bytes.Index(data, []byte(operationsRolloutStart))
+	end := bytes.Index(data, []byte(operationsRolloutEnd))
+	if end < start {
+		return nil, errors.New("operations rollout markers are out of order")
+	}
+	end += len(operationsRolloutEnd)
+	updated := make([]byte, 0, len(data)-end+start+len(section))
+	updated = append(updated, data[:start]...)
+	updated = append(updated, section...)
+	updated = append(updated, data[end:]...)
+	return updated, nil
+}
+
+func writeRolloutDurationImpact(output *strings.Builder, report Report, heading string) {
+	impact := report.RolloutDurationImpact
+	if impact == nil {
+		return
+	}
+	if heading != "" {
+		output.WriteString(heading)
+	}
+	rolling, _ := resultForScenario(report, impact.Scenario)
+	_, _ = fmt.Fprintf(
+		output,
+		"The `%s` profile measured an amortized mean of **%.3f ms per cohort** across %d sequential local `%s` cohorts; every cohort ended with all %d simulated streams terminal (%d migrated, %d completed).\n\n",
+		markdownCell(report.Profile.Name),
+		impact.MeasuredMeanCohortCompletionMilliseconds,
+		impact.MeasurementCohorts,
+		markdownCell(string(impact.Scenario)),
+		rolling.StreamsStarted,
+		rolling.StreamsMigrated,
+		rolling.StreamsCompleted,
+	)
+	output.WriteString("| Grace-window comparison | Value |\n")
+	output.WriteString("|---|---:|\n")
+	_, _ = fmt.Fprintf(output, "| Legacy configured grace period | %d s |\n", impact.LegacyGracePeriodSeconds)
+	_, _ = fmt.Fprintf(output, "| Streamweld configured grace period | %d s |\n", impact.StreamweldGracePeriodSeconds)
+	_, _ = fmt.Fprintf(output, "| Configured grace-window reduction | %d s |\n", impact.ConfiguredGraceWindowReductionSeconds)
+	_, _ = fmt.Fprintf(output, "| Modelled headroom after the measured local mean inside the %d s window | %.3f ms |\n", impact.StreamweldGracePeriodSeconds, impact.ModeledStreamweldGraceHeadroomMilliseconds)
+	_, _ = fmt.Fprintf(output, "| Measured local completion fits the %d s window | %t |\n\n", impact.StreamweldGracePeriodSeconds, impact.FitsWithinStreamweldGracePeriod)
+	output.WriteString("The measured value is an in-process migration-model interval, not physical Kubernetes rollout timing. The configured-window arithmetic does not measure Kubernetes control-plane, scheduling, image-pull, readiness, process-exit, GPU-idle, cost, or end-to-end rollout duration. Measurement scope: ")
+	output.WriteString(impact.MeasurementScope)
+	output.WriteString(".\n\n")
+}
+
+func resultForScenario(report Report, scenario Scenario) (Result, bool) {
+	for _, result := range report.Results {
+		if result.Scenario == scenario {
+			return result, true
+		}
+	}
+	return Result{}, false
 }
 
 func writeResultTable(output *strings.Builder, report Report) {

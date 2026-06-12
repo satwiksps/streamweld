@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	defaultBenchTimeout = 30 * time.Minute
-	defaultBenchOutput  = "benchmarks"
-	defaultBenchREADME  = "README.md"
+	defaultBenchTimeout    = 30 * time.Minute
+	defaultBenchOutput     = "benchmarks"
+	defaultBenchREADME     = "README.md"
+	defaultBenchOperations = "docs/operations.md"
 )
 
 func runBench(args []string, stdout, stderr io.Writer) int {
@@ -66,6 +67,10 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if err := chaos.VerifyREADMEBenchmarkSection(defaultBenchREADME, report); err != nil {
+				_, _ = fmt.Fprintf(stderr, "streamweldctl bench: verification failed: %v\n", err)
+				return 1
+			}
+			if err := chaos.VerifyOperationsRolloutSection(defaultBenchOperations, report); err != nil {
 				_, _ = fmt.Fprintf(stderr, "streamweldctl bench: verification failed: %v\n", err)
 				return 1
 			}
@@ -155,6 +160,10 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 	if isDefaultBenchOutput(*output) {
 		if err := chaos.UpdateREADMEBenchmarkSection(defaultBenchREADME, report); err != nil {
 			_, _ = fmt.Fprintf(stderr, "streamweldctl bench: update README: %v\n", err)
+			return 1
+		}
+		if err := chaos.UpdateOperationsRolloutSection(defaultBenchOperations, report); err != nil {
+			_, _ = fmt.Fprintf(stderr, "streamweldctl bench: update operations guide: %v\n", err)
 			return 1
 		}
 	}

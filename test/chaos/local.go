@@ -17,7 +17,10 @@ type LocalConfig struct {
 	ConcurrentStreams int
 	OutputTokens      int
 	Now               func() time.Time
-	MeasureTTFT       func(context.Context, int) (TTFTMeasurement, error)
+	// RolloutNow supplies the monotonic wall clock around the repeated local
+	// rolling-update cohort batch. Tests may inject a deterministic clock.
+	RolloutNow  func() time.Time
+	MeasureTTFT func(context.Context, int) (TTFTMeasurement, error)
 }
 
 // TTFTMeasurement contains paired direct and Streamweld wall-clock samples.
@@ -47,6 +50,9 @@ func RunLocal(ctx context.Context, config LocalConfig) (Report, error) {
 	}
 	if config.Now == nil {
 		config.Now = time.Now
+	}
+	if config.RolloutNow == nil {
+		config.RolloutNow = time.Now
 	}
 	if config.MeasureTTFT == nil {
 		config.MeasureTTFT = measureLocalTTFT
@@ -84,6 +90,19 @@ func RunLocal(ctx context.Context, config LocalConfig) (Report, error) {
 			result.StreamweldTTFPMilliseconds - result.DirectTTFPMilliseconds,
 		)
 		report.Results = append(report.Results, result)
+		if definition.Scenario == ScenarioRollingUpdate {
+			impact, measureErr := measureLocalRolloutDuration(
+				ctx,
+				definition,
+				config.ConcurrentStreams,
+				config.OutputTokens,
+				config.RolloutNow,
+			)
+			if measureErr != nil {
+				return Report{}, fmt.Errorf("measure %s completion: %w", definition.Scenario, measureErr)
+			}
+			report.RolloutDurationImpact = impact
+		}
 	}
 	if err := report.Validate(); err != nil {
 		return Report{}, fmt.Errorf("local correctness gate: %w", err)
@@ -102,7 +121,11 @@ type localStreamResult struct {
 	outputCorrect bool
 }
 
-func runLocalScenario(ctx context.Context, definition Definition, streams, tokens int) (Result, error) {
+func runLocalScenario(
+	ctx context.Context,
+	definition Definition,
+	streams, tokens int,
+) (Result, error) {
 	start := make(chan struct{})
 	results := make(chan localStreamResult, streams)
 	var workers sync.WaitGroup
@@ -162,6 +185,55 @@ func runLocalScenario(ctx context.Context, definition Definition, streams, token
 		case <-ctx.Done():
 			return Result{}, ctx.Err()
 		}
+	}
+}
+
+func measureLocalRolloutDuration(
+	ctx context.Context,
+	definition Definition,
+	streams, tokens int,
+	now func() time.Time,
+) (*RolloutDurationImpact, error) {
+	const (
+		initialCohorts = 32
+		maximumCohorts = 4096
+	)
+	for cohorts := initialCohorts; cohorts <= maximumCohorts; cohorts *= 2 {
+		startedAt := now()
+		for range cohorts {
+			if _, err := runLocalScenario(ctx, definition, streams, tokens); err != nil {
+				return nil, err
+			}
+		}
+		elapsed := now().Sub(startedAt)
+		if elapsed > 0 {
+			impact := newLocalRolloutDurationImpact(elapsed, cohorts)
+			if impact.MeasuredMeanCohortCompletionMilliseconds > 0 {
+				return impact, nil
+			}
+		}
+	}
+	return nil, errors.New("rollout measurement clock did not advance across repeated cohorts")
+}
+
+func newLocalRolloutDurationImpact(elapsed time.Duration, cohorts int) *RolloutDurationImpact {
+	measuredMilliseconds := roundMilliseconds(
+		float64(elapsed) / float64(cohorts) / float64(time.Millisecond),
+	)
+	return &RolloutDurationImpact{
+		Scenario:                                 ScenarioRollingUpdate,
+		MeasurementScope:                         localRolloutMeasurementScope,
+		PhysicalKubernetesTiming:                 false,
+		MeasurementCohorts:                       cohorts,
+		MeasuredMeanCohortCompletionMilliseconds: measuredMilliseconds,
+		LegacyGracePeriodSeconds:                 LegacyTerminationGracePeriodSeconds,
+		StreamweldGracePeriodSeconds:             StreamweldTerminationGracePeriodSeconds,
+		ConfiguredGraceWindowReductionSeconds:    LegacyTerminationGracePeriodSeconds - StreamweldTerminationGracePeriodSeconds,
+		ModeledStreamweldGraceHeadroomMilliseconds: roundMilliseconds(
+			float64(StreamweldTerminationGracePeriodSeconds*1000) - measuredMilliseconds,
+		),
+		FitsWithinStreamweldGracePeriod: measuredMilliseconds <=
+			float64(StreamweldTerminationGracePeriodSeconds*1000),
 	}
 }
 

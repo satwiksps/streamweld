@@ -47,6 +47,24 @@ Reproducible rollout measurements are maintained with
 the chaos harness; deployment documentation does not publish an unmeasured
 savings number.
 
+<!-- streamweld:rollout-impact:start -->
+### Generated local rollout grace-window model
+
+The `deterministic-local` profile measured an amortized mean of **0.085 ms per cohort** across 32 sequential local `rolling-update` cohorts; every cohort ended with all 8 simulated streams terminal (8 migrated, 8 completed).
+
+| Grace-window comparison | Value |
+|---|---:|
+| Legacy configured grace period | 300 s |
+| Streamweld configured grace period | 15 s |
+| Configured grace-window reduction | 285 s |
+| Modelled headroom after the measured local mean inside the 15 s window | 14999.915 ms |
+| Measured local completion fits the 15 s window | true |
+
+The measured value is an in-process migration-model interval, not physical Kubernetes rollout timing. The configured-window arithmetic does not measure Kubernetes control-plane, scheduling, image-pull, readiness, process-exit, GPU-idle, cost, or end-to-end rollout duration. Measurement scope: amortized monotonic wall-clock mean across a batch of sequential in-process rolling-update cohorts, from before each harness cohort setup through every simulated stream reaching its terminal result; repeated cohorts overcome host clock granularity and include harness overhead; excludes Kubernetes control-plane, scheduling, image-pull, readiness, process-exit, GPU-idle, and cost timing.
+
+The machine-readable source is [`benchmarks/results.json`](../benchmarks/results.json), and its canonical human rendering is [`benchmarks/results.md`](../benchmarks/results.md). Run `make bench` to re-measure and regenerate this block.
+<!-- streamweld:rollout-impact:end -->
+
 ## Kubernetes operator and route programming
 
 An `InferenceRoute` selects namespaced backend Pods, binds an exact model name,
