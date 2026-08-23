@@ -18,7 +18,7 @@ export default defineConfig(({ mode }) => ({
             compatibility_date: "2026-05-22",
             assets: {
               binding: "ASSETS",
-              not_found_handling: "single-page-application",
+              not_found_handling: "404-page",
             },
           },
         }),
