@@ -3,6 +3,8 @@ title: Resume and stop
 description: Exact cursors, fan-out readers, retention failures, and why disconnect is not cancellation.
 ---
 
+# Resume and stop
+
 ## Resume from an exact cursor
 
 Every visible journal entry has an SSE `id:` equal to its unsigned 64-bit

@@ -3,6 +3,8 @@ title: What Streamweld guarantees
 description: The invariants that make a token stream resumable and a migration safe.
 ---
 
+# What Streamweld guarantees
+
 Streamweld treats a generation as a durable logical stream instead of treating
 one HTTP connection as the generation. That distinction lets a reader reconnect
 without restarting inference and lets a producer move only when continuation is

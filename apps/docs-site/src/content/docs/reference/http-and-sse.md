@@ -3,6 +3,8 @@ title: HTTP and SSE
 description: Public endpoints, Streamweld headers, journal entry events, and terminal behavior.
 ---
 
+# HTTP and SSE
+
 Streamweld preserves the OpenAI-compatible request surface and adds durable
 stream operations.
 

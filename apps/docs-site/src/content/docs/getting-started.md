@@ -3,15 +3,17 @@ title: Install in ten minutes
 description: Install Streamweld, start the deterministic sample backend, and open a durable stream.
 ---
 
+# Install in ten minutes
+
 ## Prerequisites
 
-:::caution[Pre-release status]
-The canonical GitHub repository, GHCR images/chart, and npm packages are not
-public at this source revision. The pinned `v0.1.0` flow below is the release
-acceptance path and becomes runnable only after those artifacts are published.
-Contributors with Docker can run `make e2e` against a local kind cluster in the
-meantime.
-:::
+!!! caution "Pre-release status"
+
+    The canonical GitHub repository, GHCR images/chart, and npm packages are not
+    public at this source revision. The pinned `v0.1.0` flow below is the release
+    acceptance path and becomes runnable only after those artifacts are published.
+    Contributors with Docker can run `make e2e` against a local kind cluster in
+    the meantime.
 
 - Kubernetes 1.27 or newer
 - Helm 3.14 or newer
@@ -98,11 +100,11 @@ journals the accepted prefix, selects another `SAFE` backend, reconciles the
 continuation seam, and finishes the deterministic sequence without repeating an
 accepted chunk.
 
-:::note[What this sample proves]
-The sample is CPU-only and deterministic, so it is suitable for protocol and
-rollout validation. It is not a performance proxy for vLLM or a production-model
-compatibility claim.
-:::
+!!! note "What this sample proves"
+
+    The sample is CPU-only and deterministic, so it is suitable for protocol and
+    rollout validation. It is not a performance proxy for vLLM or a
+    production-model compatibility claim.
 
 ## Clean up
 

@@ -3,6 +3,8 @@ title: Architecture
 description: How the proxy, journal, operator, and inference backends divide responsibility.
 ---
 
+# Architecture
+
 Streamweld is intentionally a narrow layer between an OpenAI-compatible client
 and self-hosted inference backends.
 

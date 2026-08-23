@@ -1,0 +1,145 @@
+site_name: Streamweld
+site_description: Durable token streams for self-hosted LLM inference.
+site_author: Streamweld contributors
+site_url: !ENV [READTHEDOCS_CANONICAL_URL, "https://streamweld.readthedocs.io/en/latest/"]
+repo_name: satwiksps/streamweld
+repo_url: https://github.com/satwiksps/streamweld
+edit_uri: edit/main/apps/docs-site/src/content/docs/
+copyright: Copyright &copy; Streamweld contributors. Licensed under Apache-2.0.
+
+docs_dir: apps/docs-site/src/content/docs
+site_dir: .docs-site
+use_directory_urls: true
+
+theme:
+  name: material
+  language: en
+  font: false
+  icon:
+    logo: material/source-branch
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Use light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Use dark mode
+  features:
+    - content.action.edit
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+
+nav:
+  - Overview: index.md
+  - Get started:
+      - Installation and first cluster: getting-started.md
+  - Concepts:
+      - Architecture: concepts/architecture.md
+      - Durability contract: concepts/durability.md
+  - Protocol:
+      - Resume and stop: protocol/resume-and-stop.md
+      - Producer migration: protocol/producer-migration.md
+  - Operate:
+      - Kubernetes: operations/kubernetes.md
+      - Production journals: operations/production.md
+      - Observability: operations/observability.md
+  - Integrate:
+      - TypeScript clients: sdk/typescript.md
+  - Reference:
+      - HTTP and SSE: reference/http-and-sse.md
+      - Configuration: reference/configuration.md
+      - Compatibility probes: reference/compatibility.md
+      - Chaos benchmarks: reference/benchmarks.md
+      - Prior art and non-goals: reference/prior-art.md
+  - Repository source:
+      - Normative protocol: source/protocol.md
+      - Operations guide: source/operations.md
+      - Client guide: source/client.md
+      - Generated chaos evidence: source/benchmarks.md
+      - Good first issues: source/good-first-issues.md
+  - Architecture decisions:
+      - Language split: source/decisions/001-language-split.md
+      - Repository namespace: source/decisions/002-repository-namespace.md
+      - Bound upstream SSE frames: source/decisions/003-bound-upstream-sse-frames.md
+      - Buffer request selection: source/decisions/004-buffer-request-for-stream-selection.md
+      - Memory journal bounds: source/decisions/005-memory-journal-bounds.md
+      - Backend leases: source/decisions/006-attempt-scoped-backend-leases.md
+      - Owner-directed relay: source/decisions/007-owner-directed-live-relay.md
+      - Redis test strategy: source/decisions/008-test-redis-with-emulator-and-server.md
+      - Operator control: source/decisions/009-fan-out-operator-control.md
+      - Controller runtime: source/decisions/010-controller-runtime-version.md
+      - OpenTelemetry API: source/decisions/011-opentelemetry-api.md
+      - Go security baseline: source/decisions/012-go-security-baseline.md
+
+plugins:
+  - search:
+      lang: en
+  - mermaid2:
+      version: 11.17.0
+      arguments:
+        startOnLoad: true
+        flowchart:
+          curve: linear
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/satwiksps/streamweld
+      name: Streamweld on GitHub
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn

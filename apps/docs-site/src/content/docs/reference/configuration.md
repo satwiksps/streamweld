@@ -3,6 +3,8 @@ title: Configuration
 description: Safe defaults and the chart values that materially change durability behavior.
 ---
 
+# Configuration
+
 The standalone proxy resolves built-in defaults, then environment variables,
 then command-line flags. Helm renders those settings from validated values.
 

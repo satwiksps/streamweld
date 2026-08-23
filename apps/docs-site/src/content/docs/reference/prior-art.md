@@ -3,6 +3,8 @@ title: Prior art and non-goals
 description: Where Streamweld overlaps with established systems and where its scope deliberately ends.
 ---
 
+# Prior art and non-goals
+
 Streamweld builds on ideas already proven in serving runtimes, resumable
 transports, and gateways. Its reason to exist is the combination of an external
 replay cursor, explicit stream journal, conservative continuation policy, and

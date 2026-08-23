@@ -3,6 +3,7 @@
 GO ?= go
 PNPM ?= pnpm
 NODE ?= node
+PYTHON ?= python
 DOCKER ?= docker
 GORELEASER ?= goreleaser
 GOLANGCI_LINT ?= golangci-lint
@@ -88,8 +89,9 @@ bench-check: ## Verify committed benchmark provenance and correctness without re
 website: ## Start the project website.
 	$(PNPM) --filter @streamweld/website run dev
 
-docs-build: ## Build the Astro Starlight documentation site.
-	$(PNPM) --filter @streamweld/docs-site run build
+docs-build: ## Build the MkDocs Material documentation site.
+	$(NODE) apps/docs-site/scripts/sync-source-docs.mjs
+	$(PYTHON) -m mkdocs build --strict
 
 images: image-proxy image-operator ## Build both production container images.
 

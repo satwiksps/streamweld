@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { sites } from "@openai/sites-vite-plugin";
 import { cloudflare } from "@cloudflare/vite-plugin";
 export default defineConfig(({ mode }) => ({
@@ -7,9 +8,10 @@ export default defineConfig(({ mode }) => ({
     watch: { ignored: ["**/public/og.png"] },
   },
   plugins: mode === "vercel"
-    ? [react()]
+    ? [react(), tailwindcss()]
     : [
         react(),
+        tailwindcss(),
         sites(),
         cloudflare({
           config: {

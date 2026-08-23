@@ -1,144 +1,378 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-const repository = "https://github.com/satwiksps/streamweld";
-const documentation = "https://streamweld.readthedocs.io/en/latest/";
+const REPOSITORY_URL = "https://github.com/satwiksps/streamweld";
+const DOCUMENTATION_URL = "https://streamweld.readthedocs.io/";
+const GETTING_STARTED_URL = `${DOCUMENTATION_URL}en/latest/getting-started/`;
+const ARCHITECTURE_URL = `${DOCUMENTATION_URL}en/latest/concepts/architecture/`;
 
-function Arrow(): React.JSX.Element {
-  return <span aria-hidden="true">↗</span>;
+const guarantees = [
+  {
+    id: "SW001",
+    title: "Exact reader resume",
+    description: "Replay strictly after the committed cursor, then rejoin the live tail.",
+    property: "No gap or duplicate",
+  },
+  {
+    id: "SW002",
+    title: "Commit before visibility",
+    description: "An event enters the journal before any reader can observe it.",
+    property: "Replayable",
+  },
+  {
+    id: "SW003",
+    title: "Guarded migration",
+    description: "Continue on a new backend only when compatibility and seam checks pass.",
+    property: "Eligibility gated",
+  },
+  {
+    id: "SW004",
+    title: "Explicit stop",
+    description: "A stop request cancels generation and records a distinct terminal state.",
+    property: "Terminal",
+  },
+  {
+    id: "SW005",
+    title: "Reader detach",
+    description: "A dropped client socket detaches one reader without cancelling the stream.",
+    property: "Recoverable",
+  },
+] as const;
+
+const integrations = [
+  {
+    name: "HTTP proxy",
+    title: "Keep the OpenAI contract",
+    description: "Point existing chat-completion traffic at the Streamweld proxy.",
+    file: "terminal",
+    command: [
+      "curl http://localhost:8080/v1/chat/completions \\",
+      "  -H 'Content-Type: application/json' \\",
+      "  -d '{\"model\":\"llama-3.1-8b\",\"stream\":true}'",
+    ].join("\n"),
+  },
+  {
+    name: "Kubernetes",
+    title: "Route and drain safely",
+    description: "Install the operator and describe eligible inference backends declaratively.",
+    file: "terminal",
+    command: [
+      "make bootstrap",
+      "make e2e",
+      "kubectl -n streamweld-system get inferenceroutes",
+    ].join("\n"),
+  },
+  {
+    name: "TypeScript",
+    title: "Resume from the client",
+    description: "Persist the stream identity and cursor, then reconnect after transport loss.",
+    file: "app.ts",
+    command: [
+      "const stream = createDurableStream({",
+      "  url: 'http://localhost:8080/v1/chat/completions',",
+      "  resumeFrom: { id: streamId, lastEventId: cursor },",
+      "});",
+      "for await (const text of stream.text) render(text);",
+    ].join("\n"),
+  },
+] as const;
+
+const sourceCommands = [
+  "git clone https://github.com/satwiksps/streamweld.git",
+  "cd streamweld",
+  "make bootstrap",
+  "make test",
+].join("\n");
+
+function CopyButton({ value, label }: { value: string; label: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+
+  async function copy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button
+      className="inline-flex h-7 items-center rounded border border-white/[0.08] bg-white/[0.025] px-2 font-mono text-[9px] font-medium text-zinc-400 transition-colors hover:border-white/15 hover:text-white"
+      type="button"
+      onClick={copy}
+      aria-label={label}
+    >
+      <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
+    </button>
+  );
 }
 
-function App(): React.JSX.Element {
+function MobileMenu(): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent): void {
+      if (event.key === "Escape" && open) {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+
+    function closeOutside(event: PointerEvent): void {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("pointerdown", closeOutside);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("pointerdown", closeOutside);
+    };
+  }, [open]);
+
   return (
-    <div className="site-shell">
-      <header className="site-header">
-        <a className="brand" href="#top" aria-label="Streamweld home">
-          <span className="brand-mark" aria-hidden="true">SW</span>
-          <span>Streamweld</span>
-        </a>
-        <nav aria-label="Primary navigation">
-          <a href="#architecture">Architecture</a>
-          <a href={documentation}>Documentation</a>
-          <a className="nav-cta" href={repository}>GitHub <Arrow /></a>
-        </nav>
-      </header>
-
-      <main id="top">
-        <section className="hero section-wrap">
-          <div className="eyebrow"><span /> Pre-release · Apache 2.0</div>
-          <h1>Durable streams for<br />self-hosted inference.</h1>
-          <p className="hero-copy">
-            Streamweld keeps one logical LLM response alive when a backend pod,
-            node, or client connection disappears.
-          </p>
-          <div className="hero-actions">
-            <a className="button button-primary" href={documentation}>Read the docs <Arrow /></a>
-            <a className="button button-secondary" href={repository}>View on GitHub <Arrow /></a>
-          </div>
-          <ul className="proof-list" aria-label="Project characteristics">
-            <li>OpenAI-compatible</li>
-            <li>Kubernetes-native</li>
-            <li>Redis-backed</li>
-            <li>Client-resumable</li>
-          </ul>
-        </section>
-
-        <section className="problem section-wrap" aria-labelledby="problem-title">
-          <div>
-            <p className="section-label">The failure between tokens</p>
-            <h2 id="problem-title">A generation should outlive its connection.</h2>
-          </div>
-          <p>
-            A pod restart or mobile network change should not discard useful output
-            and start an expensive prompt again. Streamweld separates the generation,
-            its producer, and every reader into independently recoverable resources.
-          </p>
-        </section>
-
-        <section className="architecture section-wrap" id="architecture" aria-labelledby="architecture-title">
-          <div className="section-heading">
-            <p className="section-label">Architecture</p>
-            <h2 id="architecture-title">A narrow layer in the request path.</h2>
-            <p>Keep your inference runtime. Point OpenAI-compatible traffic at Streamweld.</p>
-          </div>
-
-          <div className="flow" role="img" aria-label="Application traffic flows through the Streamweld proxy to inference backends while events are committed to a journal and policies are managed by the Kubernetes operator">
-            <div className="flow-node">
-              <span>01</span>
-              <strong>Application</strong>
-              <small>OpenAI HTTP + SSE</small>
-            </div>
-            <div className="flow-connector" aria-hidden="true"><i />→</div>
-            <div className="flow-node flow-node-accent">
-              <span>02</span>
-              <strong>Streamweld</strong>
-              <small>Proxy + journal</small>
-            </div>
-            <div className="flow-connector" aria-hidden="true"><i />→</div>
-            <div className="flow-node">
-              <span>03</span>
-              <strong>Inference pool</strong>
-              <small>vLLM · SGLang · TGI</small>
-            </div>
-          </div>
-
-          <div className="capability-grid">
-            <article>
-              <span className="capability-number">01</span>
-              <h3>Resume readers exactly</h3>
-              <p>Replay strictly after the last committed SSE event, then rejoin the live tail without a gap or duplicate.</p>
-            </article>
-            <article>
-              <span className="capability-number">02</span>
-              <h3>Migrate producers safely</h3>
-              <p>Continue on another backend only when request, model, template, and seam checks prove migration is eligible.</p>
-            </article>
-            <article>
-              <span className="capability-number">03</span>
-              <h3>Stop intentionally</h3>
-              <p>A dropped socket detaches a reader. An explicit stop cancels generation and records a distinct terminal state.</p>
-            </article>
-          </div>
-        </section>
-
-        <section className="install section-wrap" aria-labelledby="install-title">
-          <div className="install-copy">
-            <p className="section-label">Try the source</p>
-            <h2 id="install-title">Built in public. Tested under failure.</h2>
-            <p>
-              Streamweld is pre-release. Clone the repository to run the deterministic
-              suites today; versioned images and the Helm OCI chart will arrive with v0.1.0.
-            </p>
-            <a className="text-link" href={`${documentation}getting-started/`}>Open the installation guide <Arrow /></a>
-          </div>
-          <div className="terminal" aria-label="Source quickstart commands">
-            <div className="terminal-bar"><span /><span /><span /><small>quickstart</small></div>
-            <pre><code><b>$</b> git clone https://github.com/satwiksps/streamweld.git{"\n"}<b>$</b> cd streamweld{"\n"}<b>$</b> make bootstrap{"\n"}<b>$</b> make test</code></pre>
-          </div>
-        </section>
-
-        <section className="closing section-wrap">
-          <p className="section-label">Keep the stream</p>
-          <h2>Make inference failures recoverable.</h2>
-          <div className="hero-actions">
-            <a className="button button-primary" href={documentation}>Get started <Arrow /></a>
-            <a className="button button-secondary" href={repository}>Explore the source <Arrow /></a>
-          </div>
-        </section>
-      </main>
-
-      <footer className="site-footer section-wrap">
-        <div className="brand"><span className="brand-mark" aria-hidden="true">SW</span><span>Streamweld</span></div>
-        <p>Durable streaming infrastructure for self-hosted LLM inference.</p>
-        <div><a href={documentation}>Docs</a><a href={repository}>GitHub</a><a href={`${repository}/blob/main/LICENSE`}>Apache 2.0</a></div>
-      </footer>
+    <div className="relative md:hidden" ref={menuRef}>
+      <button
+        ref={triggerRef}
+        className="inline-flex h-11 items-center rounded-md border border-white/10 bg-white/[0.035] px-3 text-xs font-medium text-zinc-300 transition-colors hover:border-white/20 hover:bg-white/[0.07]"
+        type="button"
+        aria-expanded={open}
+        aria-controls="mobile-navigation"
+        onClick={() => setOpen((current) => !current)}
+      >
+        {open ? "Close" : "Menu"}
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-12 w-56 overflow-hidden rounded-lg border border-white/10 bg-[#111114] p-1.5 shadow-2xl shadow-black/50" id="mobile-navigation">
+          {[
+            ["Product", "#product"],
+            ["Guarantees", "#guarantees"],
+            ["Integrations", "#integrations"],
+            ["How it works", "#workflow"],
+          ].map(([label, href]) => (
+            <a className="block rounded-md px-3 py-2.5 text-sm text-zinc-400 transition-colors hover:bg-white/[0.05] hover:text-white" href={href} key={href} onClick={() => setOpen(false)}>
+              {label}
+            </a>
+          ))}
+          <a className="mt-1 block border-t border-white/[0.07] px-3 py-3 text-sm font-medium text-zinc-200" href={DOCUMENTATION_URL} onClick={() => setOpen(false)}>Documentation</a>
+          <a className="block px-3 py-3 text-sm font-medium text-zinc-200" href={REPOSITORY_URL} onClick={() => setOpen(false)}>Repository</a>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+function App(): React.JSX.Element {
+  const externalLinkProps = { target: "_blank" as const, rel: "noreferrer" };
+
+  return (
+    <div className="min-h-screen overflow-x-hidden bg-[#09090b] text-zinc-100">
+      <a className="fixed left-4 top-4 z-[100] -translate-y-24 rounded-md bg-white px-4 py-2 text-sm font-semibold text-zinc-950 transition-transform focus:translate-y-0" href="#main">
+        Skip to content
+      </a>
+
+      <header className="sticky top-0 z-50 border-b border-white/[0.07] bg-[#09090b]/90 backdrop-blur-xl">
+        <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 sm:px-6 lg:px-8" aria-label="Main navigation">
+          <a className="flex items-center gap-2.5 font-semibold tracking-tight" href="#top">
+            <span>Streamweld</span>
+          </a>
+          <div className="hidden items-center gap-7 text-sm text-zinc-400 md:flex">
+            <a className="transition-colors hover:text-white" href="#product">Product</a>
+            <a className="transition-colors hover:text-white" href="#guarantees">Guarantees</a>
+            <a className="transition-colors hover:text-white" href="#integrations">Integrations</a>
+            <a className="transition-colors hover:text-white" href={DOCUMENTATION_URL} {...externalLinkProps}>Docs</a>
+          </div>
+          <div className="flex items-center gap-2">
+            <a className="hidden h-9 items-center rounded-md border border-white/10 bg-white/[0.035] px-3.5 text-sm font-medium text-zinc-200 transition-colors hover:border-white/20 hover:bg-white/[0.07] sm:inline-flex" href={REPOSITORY_URL} {...externalLinkProps}>GitHub</a>
+            <MobileMenu />
+          </div>
+        </nav>
+      </header>
+
+      <main id="main">
+        <section id="top" className="relative">
+          <div className="hero-grid absolute inset-x-0 top-0 h-[720px] opacity-60" aria-hidden="true" />
+          <div className="relative mx-auto max-w-7xl px-5 pb-16 pt-24 sm:px-6 sm:pt-28 lg:px-8 lg:pb-20 lg:pt-32">
+            <div className="mx-auto max-w-4xl text-center">
+              <p className="mb-5 font-mono text-xs font-medium uppercase tracking-[0.18em] text-blue-300">Open source, Kubernetes-native, OpenAI-compatible</p>
+              <h1 className="text-balance text-5xl font-semibold tracking-[-0.045em] text-white sm:text-6xl lg:text-[72px] lg:leading-[1.04]">
+                Keep every token
+                <span className="block text-zinc-400">through infrastructure failure.</span>
+              </h1>
+              <p className="mx-auto mt-6 max-w-2xl text-pretty text-base leading-7 text-zinc-400 sm:text-lg sm:leading-8">
+                Streamweld gives each LLM generation a durable identity, append-only journal, and exact resume cursor across client and backend failures.
+              </p>
+              <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+                <a className="inline-flex h-11 w-full items-center justify-center rounded-md bg-white px-5 text-sm font-semibold text-zinc-950 transition-colors hover:bg-zinc-200 sm:w-auto" href="#get-started">Get started</a>
+                <a className="inline-flex h-11 w-full items-center justify-center rounded-md border border-white/12 bg-white/[0.035] px-5 text-sm font-medium text-zinc-200 transition-colors hover:border-white/20 hover:bg-white/[0.07] sm:w-auto" href={REPOSITORY_URL} {...externalLinkProps}>View source</a>
+              </div>
+              <p className="mt-5 text-sm text-zinc-400">Self-hosted and pre-release. Keep your inference runtime and OpenAI-compatible clients.</p>
+            </div>
+
+            <div id="product" className="mt-14 scroll-mt-24 lg:mt-16">
+              <figure className="overflow-hidden rounded-xl border border-white/10 bg-[#0c0c0f] shadow-[0_32px_100px_rgba(0,0,0,0.55)]">
+                <figcaption className="sr-only">Example Streamweld durable generation report</figcaption>
+                <div className="flex h-12 items-center justify-between border-b border-white/[0.07] bg-[#111114] px-4 sm:px-5">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid size-6 shrink-0 place-items-center rounded border border-white/10 bg-white/[0.03] font-mono text-[9px] font-bold text-blue-300">SW</span>
+                    <span className="truncate text-xs font-medium text-zinc-300">Durable generation</span>
+                    <span className="hidden text-xs text-zinc-400 sm:inline">/</span>
+                    <span className="hidden font-mono text-[11px] text-zinc-400 sm:inline">01arz3ndektsv4rrffq69g5fav</span>
+                  </div>
+                  <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] text-emerald-300"><i className="size-1.5 rounded-full bg-emerald-400" aria-hidden="true" />RESUMED</span>
+                </div>
+
+                <div className="grid lg:grid-cols-[minmax(0,1fr)_360px]">
+                  <div className="min-w-0">
+                    <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3 sm:px-5">
+                      <span className="font-mono text-[11px] text-zinc-400">chat.completion.chunk</span>
+                      <span className="font-mono text-[10px] text-zinc-400">attempt 01 → 02</span>
+                    </div>
+                    <div className="overflow-x-auto py-5 font-mono text-[11px] leading-7 sm:py-7 sm:text-[13px]">
+                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] border-y border-blue-400/10 bg-blue-400/[0.025] px-3 text-zinc-400 sm:px-5"><span>event 0040</span><code>Roll out the new model pool only after</code></div>
+                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] px-3 text-zinc-400 sm:px-5"><span>event 0041</span><code>readiness and compatibility checks pass.</code></div>
+                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] border-y border-rose-400/10 bg-rose-400/[0.06] px-3 text-rose-200 sm:px-5"><span className="text-zinc-400">backend</span><code>pod terminated · attempt 01 closed</code></div>
+                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] border-b border-emerald-400/10 bg-emerald-400/[0.055] px-3 text-emerald-200 sm:px-5"><span className="text-zinc-400">resume</span><code>attempt 02 · cursor 0041 committed</code></div>
+                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] px-3 text-zinc-400 sm:px-5"><span>event 0042</span><code>Then drain the old replicas gradually.</code></div>
+                    </div>
+                    <div className="border-t border-white/[0.07] bg-black/20 px-4 py-4 font-mono text-[11px] sm:px-5 sm:text-xs">
+                      <div className="flex gap-3"><span className="select-none text-blue-300">$</span><code className="text-zinc-300">streamweldctl streams 01arz3ndektsv4rrffq69g5fav</code></div>
+                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-zinc-400"><span><b className="font-medium text-emerald-300">complete</b> logical stream</span><span>2 attempts</span><span>43 committed events</span></div>
+                    </div>
+                  </div>
+
+                  <aside className="border-t border-white/[0.07] bg-[#0a0a0d] lg:border-l lg:border-t-0">
+                    <div className="flex h-12 items-center justify-between border-b border-white/[0.07] px-5"><span className="text-xs font-medium text-zinc-300">Stream state</span><span className="grid size-5 place-items-center rounded bg-white/[0.06] font-mono text-[10px] text-zinc-400">2</span></div>
+                    <div className="p-5">
+                      <div className="flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-wider"><span className="text-emerald-300">Complete</span><span className="text-zinc-700">/</span><span className="text-blue-300">SW001</span></div>
+                      <p className="mt-4 text-base font-semibold text-white">Reader resumed exactly</p>
+                      <p className="mt-2 text-sm leading-6 text-zinc-400">Replay continued strictly after event 0041 and rejoined the live tail.</p>
+                      <div className="mt-5 rounded-md border border-white/[0.07] bg-black/20">
+                        <div className="border-b border-white/[0.06] px-3 py-2 font-mono text-[9px] uppercase tracking-wider text-zinc-400">Cursor</div>
+                        <div className="space-y-2 px-3 py-3 font-mono text-[10px]"><code className="block text-zinc-400">last seen&nbsp;&nbsp;0041</code><code className="block text-emerald-300">next event 0042</code></div>
+                      </div>
+                      <div className="mt-5 border-l-2 border-blue-400/50 pl-3"><span className="font-mono text-[9px] uppercase tracking-wider text-zinc-400">Result</span><p className="mt-1.5 text-xs leading-5 text-zinc-400">No regenerated prompt, missing token, or duplicate event.</p></div>
+                    </div>
+                  </aside>
+                </div>
+              </figure>
+            </div>
+
+            <div className="grid gap-px border-x border-b border-white/[0.07] bg-white/[0.07] sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                ["Compatible", "OpenAI HTTP + SSE"],
+                ["Durable", "memory or Redis journal"],
+                ["Recoverable", "reader + producer resume"],
+                ["Kubernetes-native", "proxy + operator"],
+              ].map(([label, detail]) => (
+                <div className="bg-[#0b0b0e] px-5 py-4" key={label}><strong className="block text-xs font-medium text-zinc-200">{label}</strong><span className="mt-1 block font-mono text-[10px] text-zinc-400">{detail}</span></div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="border-y border-white/[0.07] bg-white/[0.012]">
+          <div className="mx-auto grid max-w-7xl gap-12 px-5 py-20 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:gap-24 lg:px-8 lg:py-28">
+            <div><p className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-blue-300">The gap in direct streaming</p><h2 className="mt-4 max-w-xl text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">A healthy model cannot rescue a broken response.</h2></div>
+            <div className="space-y-8 text-base leading-7 text-zinc-400">
+              <p>A direct SSE connection binds the generation, backend process, and reader to one fragile request. When any part disappears, useful output is usually discarded.</p>
+              <dl className="divide-y divide-white/[0.07] border-y border-white/[0.07]">
+                <div className="grid gap-2 py-4 sm:grid-cols-[150px_1fr]"><dt className="text-sm font-medium text-zinc-200">Direct proxy</dt><dd className="text-sm text-zinc-400">Retry the prompt and generate a different response.</dd></div>
+                <div className="grid gap-2 py-4 sm:grid-cols-[150px_1fr]"><dt className="text-sm font-medium text-zinc-200">Streamweld</dt><dd className="text-sm text-zinc-400">Resume the same logical stream from its committed cursor.</dd></div>
+              </dl>
+              <p className="text-sm text-zinc-400">Streamweld does not replace the model server. It adds identity, journaling, and recovery around the streaming boundary.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="guarantees" className="scroll-mt-24">
+          <div className="mx-auto max-w-7xl px-5 py-20 sm:px-6 lg:px-8 lg:py-28">
+            <div className="grid gap-6 lg:grid-cols-[1fr_420px] lg:items-end">
+              <div><p className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-blue-300">A narrow durability contract</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">Explicit guarantees at the stream boundary.</h2></div>
+              <p className="text-sm leading-6 text-zinc-400">Every guarantee maps to a protocol rule that can be tested under deterministic failure.</p>
+            </div>
+            <div className="mt-10 overflow-hidden rounded-lg border border-white/[0.08]">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] border-collapse text-left">
+                  <thead className="bg-white/[0.025] font-mono text-[10px] uppercase tracking-[0.12em] text-zinc-400"><tr><th className="w-28 px-5 py-3 font-medium">Rule</th><th className="w-56 px-5 py-3 font-medium">Guarantee</th><th className="px-5 py-3 font-medium">Contract</th><th className="w-44 px-5 py-3 font-medium">Property</th></tr></thead>
+                  <tbody className="divide-y divide-white/[0.07]">
+                    {guarantees.map((guarantee) => (
+                      <tr className="bg-[#0b0b0e] transition-colors hover:bg-white/[0.025]" key={guarantee.id}><td className="px-5 py-4 font-mono text-xs font-semibold text-blue-300">{guarantee.id}</td><td className="px-5 py-4 text-sm font-medium text-zinc-200">{guarantee.title}</td><td className="px-5 py-4 text-sm text-zinc-400">{guarantee.description}</td><td className="px-5 py-4 font-mono text-[10px] font-semibold uppercase text-emerald-300">{guarantee.property}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <a className="mt-5 inline-flex text-sm font-medium text-zinc-400 transition-colors hover:text-white" href={`${DOCUMENTATION_URL}en/latest/protocol/resume-and-stop/`} {...externalLinkProps}>Read the protocol contract</a>
+          </div>
+        </section>
+
+        <section id="integrations" className="scroll-mt-24 border-y border-white/[0.07] bg-white/[0.012]">
+          <div className="mx-auto max-w-7xl px-5 py-20 sm:px-6 lg:px-8 lg:py-28">
+            <div className="max-w-2xl"><p className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-blue-300">One stream, three integration surfaces</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">Add durability without replacing inference.</h2><p className="mt-4 text-base leading-7 text-zinc-400">The proxy owns the data path, the operator owns routing policy, and the client carries the exact resume cursor.</p></div>
+            <div className="mt-10 grid overflow-hidden rounded-lg border border-white/[0.08] lg:grid-cols-3">
+              {integrations.map((integration) => (
+                <article className="border-b border-white/[0.08] bg-[#0b0b0e] p-5 last:border-b-0 lg:border-b-0 lg:border-r lg:last:border-r-0" key={integration.name}>
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-blue-300">{integration.name}</span>
+                  <h3 className="mt-3 text-base font-semibold text-zinc-100">{integration.title}</h3>
+                  <p className="mt-2 min-h-12 text-sm leading-6 text-zinc-400">{integration.description}</p>
+                  <div className="mt-5 overflow-hidden rounded-md border border-white/[0.07] bg-black/25"><div className="flex h-9 items-center justify-between border-b border-white/[0.06] px-3"><span className="truncate font-mono text-[10px] text-zinc-400">{integration.file}</span><CopyButton value={integration.command} label={`Copy ${integration.name} example`} /></div><pre className="min-h-32 overflow-x-auto p-3 font-mono text-[11px] leading-5 text-zinc-400"><code>{integration.command}</code></pre></div>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="workflow" className="scroll-mt-24">
+          <div className="mx-auto max-w-7xl px-5 py-20 sm:px-6 lg:px-8 lg:py-28">
+            <div className="grid gap-12 lg:grid-cols-[0.82fr_1.18fr] lg:gap-24">
+              <div><p className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-blue-300">Small, explicit system boundary</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">Commit the event. Then show it.</h2><p className="mt-5 text-base leading-7 text-zinc-400">The logical stream survives because its state is independent from any reader socket or backend attempt.</p><a className="mt-6 inline-flex text-sm font-medium text-zinc-300 transition-colors hover:text-white" href={ARCHITECTURE_URL} {...externalLinkProps}>Read the architecture</a></div>
+              <div>
+                <ol className="grid gap-px overflow-hidden rounded-lg border border-white/[0.08] bg-white/[0.08] sm:grid-cols-2">
+                  {[
+                    ["01", "Create the stream", "Assign one logical identity before choosing a backend attempt."],
+                    ["02", "Journal each event", "Commit ordered SSE events before exposing them to readers."],
+                    ["03", "Detach failures", "Treat reader loss and producer loss as independent recovery paths."],
+                    ["04", "Resume exactly", "Replay after the cursor, then tail the same logical response live."],
+                  ].map(([number, title, description]) => (
+                    <li className="bg-[#0b0b0e] p-5" key={number}><span className="font-mono text-[10px] text-zinc-400">{number}</span><h3 className="mt-5 text-sm font-semibold text-zinc-200">{title}</h3><p className="mt-2 text-xs leading-5 text-zinc-400">{description}</p></li>
+                  ))}
+                </ol>
+                <div className="mt-6 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-white/[0.07] pt-6 text-xs text-zinc-400 sm:grid-cols-4">
+                  {["No prompt replay", "No hidden duplicate", "No model lock-in", "No hosted control plane"].map((fact) => (<span className="flex items-center gap-2" key={fact}><i className="size-1.5 rounded-full bg-emerald-400" aria-hidden="true" />{fact}</span>))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="get-started" className="scroll-mt-24 border-t border-white/[0.07]">
+          <div className="mx-auto max-w-7xl px-5 py-20 sm:px-6 lg:px-8 lg:py-28">
+            <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:gap-20">
+              <div><p className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-blue-300">Run the source</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">Exercise the durable path locally.</h2><p className="mt-4 text-sm leading-6 text-zinc-400">Streamweld is pre-release. Build the repository, run the deterministic suites, and follow the kind walkthrough before production evaluation.</p></div>
+              <div className="overflow-hidden rounded-lg border border-white/[0.09] bg-[#0b0b0e]"><div className="flex h-11 items-center justify-between border-b border-white/[0.07] px-4"><span className="font-mono text-[10px] text-zinc-400">terminal</span><CopyButton value={sourceCommands} label="Copy source commands" /></div><pre className="overflow-x-auto p-4 font-mono text-[11px] leading-6 text-zinc-300 sm:p-5 sm:text-xs"><code>{sourceCommands}</code></pre></div>
+            </div>
+            <div className="mt-14 flex flex-col gap-4 border-t border-white/[0.07] pt-8 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-zinc-400">Apache-2.0, Go + TypeScript, pre-release</p><a className="inline-flex h-10 items-center justify-center rounded-md bg-white px-4 text-sm font-semibold text-zinc-950 transition-colors hover:bg-zinc-200" href={GETTING_STARTED_URL} {...externalLinkProps}>Open installation guide</a></div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="border-t border-white/[0.07] bg-[#070708]">
+        <div className="mx-auto flex max-w-7xl flex-col gap-8 px-5 py-10 sm:px-6 md:flex-row md:items-end md:justify-between lg:px-8">
+          <div><a className="inline-flex items-center gap-2.5 font-semibold tracking-tight" href="#top"><span className="grid size-7 place-items-center rounded-md border border-white/15 bg-white/[0.04] font-mono text-[10px] font-bold text-blue-300" aria-hidden="true">SW</span>Streamweld</a><p className="mt-3 max-w-sm text-xs leading-5 text-zinc-400">Durable token streams for self-hosted LLM inference.</p></div>
+          <div className="flex flex-wrap gap-x-6 gap-y-3 text-xs text-zinc-400"><a className="hover:text-zinc-200" href={DOCUMENTATION_URL} {...externalLinkProps}>Docs</a><a className="hover:text-zinc-200" href={`${DOCUMENTATION_URL}en/latest/protocol/resume-and-stop/`} {...externalLinkProps}>Protocol</a><a className="hover:text-zinc-200" href={`${REPOSITORY_URL}/blob/main/SECURITY.md`} {...externalLinkProps}>Security</a><a className="hover:text-zinc-200" href={`${REPOSITORY_URL}/blob/main/CONTRIBUTING.md`} {...externalLinkProps}>Contributing</a><a className="hover:text-zinc-200" href={REPOSITORY_URL} {...externalLinkProps}>GitHub</a></div>
+        </div>
+        <div className="mx-auto flex max-w-7xl flex-col gap-1 border-t border-white/[0.05] px-5 py-5 font-mono text-[11px] text-zinc-400 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8"><span>Apache License 2.0</span><span>Pre-release, self-hosted and open source</span></div>
+      </footer>
+
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({ "@context": "https://schema.org", "@type": "SoftwareApplication", name: "Streamweld", applicationCategory: "DeveloperApplication", operatingSystem: "Kubernetes", url: "https://streamweld.vercel.app/", license: "https://www.apache.org/licenses/LICENSE-2.0", codeRepository: REPOSITORY_URL, description: "Durable token streams for self-hosted LLM inference." }).replace(/</g, "\\u003c") }} />
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

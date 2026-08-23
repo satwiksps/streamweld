@@ -3,6 +3,8 @@ title: Producer migration
 description: Failure detection, eligibility gates, continuation, and seam reconciliation.
 ---
 
+# Producer migration
+
 Producer migration continues one logical response on a different inference
 backend. It is not a blind retry. Streamweld refuses the move unless it can form a
 valid continuation request and reconcile the boundary.
@@ -41,9 +43,9 @@ Every successful move commits a `migration` journal entry before continuation
 chunks become visible. That entry records origin and target backend, trigger,
 attempt number, rescued tokens, and whether token accounting was estimated.
 
-:::caution[Sampling still matters]
-A safe chat template makes continuation structurally possible; it does not make
-stochastic inference bit-for-bit deterministic. Evaluate application tolerance,
-sampling settings, model versions, and the conformance verdict before enabling
-migration for production traffic.
-:::
+!!! caution "Sampling still matters"
+
+    A safe chat template makes continuation structurally possible; it does not
+    make stochastic inference bit-for-bit deterministic. Evaluate application
+    tolerance, sampling settings, model versions, and the conformance verdict
+    before enabling migration for production traffic.

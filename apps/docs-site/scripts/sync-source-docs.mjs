@@ -48,6 +48,8 @@ async function renderSourceDocument(source, destination, fallbackTitle) {
 		`editUrl: ${JSON.stringify(editUrl)}`,
 		'---',
 		'',
+		`# ${title}`,
+		'',
 		'> This page is generated at build time from the repository source linked above.',
 		'',
 		linkedBody.trimStart(),

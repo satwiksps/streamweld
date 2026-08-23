@@ -3,6 +3,8 @@ title: Compatibility probes
 description: How the checker evaluates chat templates and what has actually been tested.
 ---
 
+# Compatibility probes
+
 Safe producer migration depends on a target backend's ability to continue an
 existing assistant message. Run the same checker used by the operator:
 

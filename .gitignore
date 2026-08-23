@@ -22,6 +22,7 @@ apps/*/dist/
 apps/*/.vite/
 apps/*/.astro/
 apps/*/astro-dist/
+/.docs-site/
 
 # Local configuration and secrets
 .env

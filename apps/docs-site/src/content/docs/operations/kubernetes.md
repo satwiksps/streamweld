@@ -3,6 +3,8 @@ title: Kubernetes
 description: Route programming, compatibility admission, rollout drain, and safe chart layouts.
 ---
 
+# Kubernetes
+
 ## Custom resources
 
 An `InferenceRoute` selects backend Pods and maps an OpenAI model name to those

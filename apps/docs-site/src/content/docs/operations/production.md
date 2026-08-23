@@ -3,6 +3,8 @@ title: Production journals
 description: Choose memory or Redis, configure owner relay, and understand degraded mode.
 ---
 
+# Production journals
+
 ## Memory mode
 
 Memory is the development default. It is bounded, process-local, and valid for

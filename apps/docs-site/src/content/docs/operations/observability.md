@@ -3,6 +3,8 @@ title: Observe and debug
 description: Metrics, traces, logs, dashboards, and a practical migration investigation.
 ---
 
+# Observe and debug
+
 ## Prometheus metrics
 
 The proxy exposes stream outcomes, migrations and refusals, rescued and re-billed

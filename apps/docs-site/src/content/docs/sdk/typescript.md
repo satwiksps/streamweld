@@ -3,6 +3,8 @@ title: TypeScript clients
 description: Durable async iteration and the Vercel AI SDK v5 transport adapter.
 ---
 
+# TypeScript clients
+
 ## Core client
 
 `@streamweld/client` has no runtime dependency. It supports browsers, Node.js,
