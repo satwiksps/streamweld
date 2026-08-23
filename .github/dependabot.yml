@@ -23,20 +23,15 @@ updates:
       go-modules:
         patterns: ["*"]
         update-types: ["minor", "patch"]
-    # Keep the operator on its ADR-approved Kubernetes 1.32 compatibility
-    # line. Minor-line upgrades require a coordinated controller migration,
-    # while patch releases on the current line remain eligible.
+    # Keep the operator on the exact ADR-approved Kubernetes compatibility
+    # set. These tightly coupled modules move together in a dedicated upgrade
+    # after webhook, CRD, image, and kind validation.
     ignore:
       - dependency-name: sigs.k8s.io/controller-runtime
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: k8s.io/api
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: k8s.io/apiextensions-apiserver
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: k8s.io/apimachinery
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: k8s.io/client-go
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: npm
     directory: /
