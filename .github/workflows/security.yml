@@ -24,7 +24,7 @@ jobs:
           - go
           - javascript-typescript
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
@@ -43,10 +43,10 @@ jobs:
           - proxy
           - operator
     steps:
-      - uses: actions/checkout@v6.0.2
-      - uses: docker/setup-buildx-action@v4.1.0
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-buildx-action@v4.3.0
       - id: build
-        uses: docker/build-push-action@v7.2.0
+        uses: docker/build-push-action@v7.3.0
         with:
           context: .
           target: ${{ matrix.target }}
@@ -57,7 +57,7 @@ jobs:
           sbom: false
           cache-from: type=gha,scope=security-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=security-${{ matrix.target }}
-      - uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
           image-ref: streamweld-${{ matrix.target }}:security-scan
