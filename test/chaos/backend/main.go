@@ -226,12 +226,7 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 	_, _ = io.WriteString(writer, "data: [DONE]\n\n")
 	flush(writer)
 	logger.DebugContext(request.Context(), "deterministic generation completed",
-		"scenario", safeLogString(scenario), "start", start, "tokens", limit)
-}
-
-func safeLogString(value string) string {
-	value = strings.ReplaceAll(value, "\r", `\r`)
-	return strings.ReplaceAll(value, "\n", `\n`)
+		"start", start, "tokens", limit)
 }
 
 func continuationStart(messages []message) int {

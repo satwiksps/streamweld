@@ -56,14 +56,6 @@ func TestUnsafeTemplateBreaksTheTwoRequiredConformanceProbes(t *testing.T) {
 	}
 }
 
-func TestSafeLogStringEscapesRecordBreaks(t *testing.T) {
-	t.Parallel()
-
-	if got, want := safeLogString("scenario\r\nforged"), `scenario\r\nforged`; got != want {
-		t.Fatalf("safeLogString() = %q, want %q", got, want)
-	}
-}
-
 func performCompletion(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
