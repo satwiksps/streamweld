@@ -88,7 +88,14 @@ describe("demo worker", () => {
 
   it("proxies Vercel API calls to a configured shared Worker backend", async () => {
     const upstreamResponse = new Response(JSON.stringify({ marker: "relayed-body" }), {
-      headers: { "X-Upstream-Response": "preserved" },
+      headers: {
+        Connection: "keep-alive",
+        "Content-Encoding": "gzip",
+        "Content-Length": "25",
+        "Set-Cookie": "must-not-leak=1",
+        "Transfer-Encoding": "chunked",
+        "X-Upstream-Response": "preserved",
+      },
     });
     const upstreamFetch = vi.fn(async (_request: Request) => upstreamResponse);
     vi.stubEnv("STREAMWELD_DEMO_UPSTREAM_ORIGIN", "https://worker.demo.test");
@@ -115,6 +122,11 @@ describe("demo worker", () => {
     expect(response).not.toBe(upstreamResponse);
     expect(await response.json()).toEqual({ marker: "relayed-body" });
     expect(response.headers.get("X-Upstream-Response")).toBe("preserved");
+    expect(response.headers.has("Content-Encoding")).toBe(false);
+    expect(response.headers.has("Content-Length")).toBe(false);
+    expect(response.headers.has("Connection")).toBe(false);
+    expect(response.headers.has("Set-Cookie")).toBe(false);
+    expect(response.headers.has("Transfer-Encoding")).toBe(false);
     const forwarded = upstreamFetch.mock.calls[0]?.[0];
     expect(forwarded).toBeInstanceOf(Request);
     expect(forwarded?.signal.aborted).toBe(false);
@@ -124,6 +136,41 @@ describe("demo worker", () => {
       "x-streamweld-verbose": "1",
     });
     expect(upstreamFetch).toHaveBeenCalledOnce();
+  });
+
+  it("relays a configured upstream SSE response without buffering", async () => {
+    const encoder = new TextEncoder();
+    let upstreamController!: ReadableStreamDefaultController<Uint8Array>;
+    const upstreamResponse = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        upstreamController = controller;
+        controller.enqueue(encoder.encode("id: 1\ndata: first\n\n"));
+      },
+    }), {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "X-Streamweld-Durability": "durable",
+      },
+    });
+    vi.stubEnv("STREAMWELD_DEMO_UPSTREAM_ORIGIN", "https://worker.demo.test");
+    vi.stubGlobal("fetch", vi.fn(async () => upstreamResponse));
+
+    const response = await vercelFunction.fetch(new Request(
+      "https://demo.test/api/streamweld?__streamweld_path=/v1/streams/stream-id/events",
+    ));
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe("id: 1\ndata: first\n\n");
+    expect(first.done).toBe(false);
+
+    upstreamController.enqueue(encoder.encode("id: 2\ndata: second\n\n"));
+    upstreamController.close();
+    const second = await reader.read();
+    expect(new TextDecoder().decode(second.value)).toBe("id: 2\ndata: second\n\n");
+    expect(second.done).toBe(false);
+    expect((await reader.read()).done).toBe(true);
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(response.headers.get("X-Streamweld-Durability")).toBe("durable");
   });
 
   it("rejects a normalized path that escapes the public API prefixes", async () => {

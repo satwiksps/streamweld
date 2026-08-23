@@ -61,13 +61,17 @@ export default {
         ? new Request(upstream, { method: request.method, headers })
         : new Request(upstream, { method: request.method, headers, body });
       const upstreamResponse = await fetch(upstreamRequest);
+      const responseHeaders = new Headers(upstreamResponse.headers);
+      for (const header of responseFramingHeaders) responseHeaders.delete(header);
       // Re-wrap cross-origin fetch responses at the Vercel function boundary.
       // Returning the undici Response object directly can preserve its status
-      // and headers while the platform adapter loses the body stream.
+      // and headers while the platform adapter loses the body stream. Framing
+      // headers describe the upstream connection or compressed representation,
+      // not the decoded stream Vercel sends to the browser.
       return new Response(upstreamResponse.body, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
-        headers: upstreamResponse.headers,
+        headers: responseHeaders,
       });
     }
 
@@ -113,6 +117,20 @@ function shouldForwardHeader(header: string): boolean {
     || normalized === "last-event-id"
     || normalized.startsWith("x-streamweld-");
 }
+
+const responseFramingHeaders = [
+  "connection",
+  "content-encoding",
+  "content-length",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "set-cookie",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+] as const;
 
 function upstreamURL(requestURL: URL): URL | null {
   const value = process.env["STREAMWELD_DEMO_UPSTREAM_ORIGIN"]?.trim();
