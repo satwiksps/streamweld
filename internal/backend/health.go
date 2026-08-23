@@ -158,7 +158,11 @@ func (pool *Pool) probeOne(parent context.Context, target probeTarget) ProbeResu
 	} else {
 		record.lastProbeError = boundedError(err)
 	}
-	pool.notifyLocked(record)
+	if changed {
+		pool.notifySelectionLocked(record)
+	} else {
+		pool.notifyLocked(record)
+	}
 	transition := Transition{Backend: pool.stateLocked(record, now), Changed: changed}
 	if newHealth != HealthHealthy && len(record.leases) != 0 {
 		transition.Bindings = bindingsLocked(record)

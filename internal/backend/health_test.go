@@ -31,9 +31,26 @@ func TestHTTPProbeHealthTransitionsAndNoRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changed := pool.Changes()
 	results, err := pool.ProbeAll(context.Background())
 	if err != nil || len(results) != 1 || !results[0].Applied || !results[0].Healthy || results[0].Err != nil {
 		t.Fatalf("first ProbeAll() = (%+v, %v)", results, err)
+	}
+	select {
+	case <-changed:
+	case <-time.After(poolTestTimeout):
+		t.Fatal("healthy probe transition did not notify selection waiters")
+	}
+	unchanged := pool.Changes()
+	clock.Add(time.Second)
+	results, err = pool.ProbeAll(context.Background())
+	if err != nil || len(results) != 1 || results[0].Transition.Changed {
+		t.Fatalf("unchanged healthy ProbeAll() = (%+v, %v)", results, err)
+	}
+	select {
+	case <-unchanged:
+		t.Fatal("unchanged healthy probe notified selection waiters")
+	default:
 	}
 	if got := pathSeen.Load(); got != "/api/health" {
 		t.Errorf("health path = %v, want /api/health", got)

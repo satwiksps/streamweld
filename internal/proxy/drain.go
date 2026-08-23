@@ -70,9 +70,10 @@ func (h *Handler) handleBackendDrainRoute(writer http.ResponseWriter, request *h
 	}
 	defer drain.Close()
 	snapshot := drain.Snapshot()
-	h.durable.triggerBindings("drain", id, snapshot.Bindings)
 
 	waitContext, cancel := context.WithTimeout(request.Context(), timeout)
+	deadline, _ := waitContext.Deadline()
+	h.durable.triggerBindingsUntil("drain", id, snapshot.Bindings, deadline)
 	state, waitErr := drain.Wait(waitContext)
 	cancel()
 	status := http.StatusOK
@@ -129,13 +130,13 @@ func (h *Handler) handlePodDrain(writer http.ResponseWriter, request *http.Reque
 		writeAPIError(writer, http.StatusNotFound, "backend_not_found", "pod has no registered backends")
 		return
 	}
-	for _, drain := range drains {
-		snapshot := drain.Snapshot()
-		h.durable.triggerBindings("drain", snapshot.Backend.ID, snapshot.Bindings)
-	}
-
 	waitContext, cancel := context.WithTimeout(request.Context(), timeout)
 	defer cancel()
+	deadline, _ := waitContext.Deadline()
+	for _, drain := range drains {
+		snapshot := drain.Snapshot()
+		h.durable.triggerBindingsUntil("drain", snapshot.Backend.ID, snapshot.Bindings, deadline)
+	}
 	status := http.StatusOK
 	inFlight := 0
 	backendNames := make([]string, 0, len(drains))

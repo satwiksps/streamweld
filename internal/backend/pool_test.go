@@ -66,6 +66,54 @@ func markHealthy(t *testing.T, pool *Pool, ids ...ID) {
 	}
 }
 
+func TestChangesSignalsNewReadyBackendAdmission(t *testing.T) {
+	t.Parallel()
+	clock := &testClock{now: time.Unix(1, 0)}
+	origin := testBackend(t, "origin:8000", "http://origin:8000")
+	pool := testPool(t, clock, origin)
+
+	first := pool.Changes()
+	second := pool.Changes()
+	replacement := testBackend(t, "replacement:8000", "http://replacement:8000")
+	if err := pool.ReplaceReady([]Backend{origin, replacement}); err != nil {
+		t.Fatalf("ReplaceReady() error: %v", err)
+	}
+	for index, changed := range []<-chan struct{}{first, second} {
+		select {
+		case <-changed:
+		case <-time.After(poolTestTimeout):
+			t.Fatalf("pool change subscriber %d was not notified of replacement admission", index)
+		}
+	}
+
+	next := pool.Changes()
+	select {
+	case <-next:
+		t.Fatal("new pool change subscription was already closed")
+	default:
+	}
+}
+
+func TestChangesIgnoresLeaseOnlyMutations(t *testing.T) {
+	t.Parallel()
+	clock := &testClock{now: time.Unix(1, 0)}
+	origin := testBackend(t, "origin:8000", "http://origin:8000")
+	pool := testPool(t, clock, origin)
+	markHealthy(t, pool, origin.ID)
+
+	changed := pool.Changes()
+	lease, err := pool.AcquireModel("stream-1", "test-model")
+	if err != nil {
+		t.Fatalf("AcquireModel() error: %v", err)
+	}
+	lease.Release()
+	select {
+	case <-changed:
+		t.Fatal("selection change channel closed for lease-only mutations")
+	default:
+	}
+}
+
 func TestConfigBackendValidationAndSnapshotIsolation(t *testing.T) {
 	clock := &testClock{now: time.Date(2026, 8, 22, 12, 0, 0, 0, time.FixedZone("test", 5*60*60))}
 	backend := testBackend(t, "backend-a:8000", "HTTP://backend-a:8000/base")

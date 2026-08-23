@@ -14,13 +14,17 @@ import (
 	"time"
 
 	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/conformance"
 	"github.com/satwiksps/streamweld/internal/journal"
 	"github.com/satwiksps/streamweld/internal/migrate"
 	"github.com/satwiksps/streamweld/internal/proxy/sse"
 	"go.opentelemetry.io/otel/propagation"
 )
 
-type migrationCause struct{ reason string }
+type migrationCause struct {
+	reason   string
+	deadline time.Time
+}
 
 func (cause *migrationCause) Error() string { return "migrate producer: " + cause.reason }
 
@@ -45,6 +49,7 @@ type attemptSpec struct {
 type attemptOutcome struct {
 	terminal  bool
 	trigger   string
+	deadline  time.Time
 	passive   bool
 	rejection *upstreamRejection
 	err       error
@@ -109,7 +114,7 @@ func (r *streamRuntime) runProducer(rawQuery string, started chan<- producerStar
 			return
 		}
 
-		next, migrated := r.prepareMigration(outcome.trigger, outcome.passive)
+		next, migrated := r.prepareMigration(outcome.trigger, outcome.passive, outcome.deadline)
 		if !migrated {
 			// Refusal commits its warning/error sequence before returning.
 			signal(producerStartResult{})
@@ -151,10 +156,13 @@ func (r *streamRuntime) runAttempt(
 	r.mu.Lock()
 	r.attemptCancel = attemptCancel
 	pending := r.pendingTrigger
+	pendingDeadline := r.pendingDeadline
 	r.pendingTrigger = ""
+	r.pendingDeadline = time.Time{}
+	r.pendingFallback = false
 	r.mu.Unlock()
 	if pending != "" {
-		attemptCancel(&migrationCause{reason: pending})
+		attemptCancel(&migrationCause{reason: pending, deadline: pendingDeadline})
 	}
 	if context.Cause(attemptContext) != nil {
 		return r.outcomeForAttemptError(attemptContext, "tcp_reset")
@@ -357,7 +365,7 @@ func (r *streamRuntime) outcomeForAttemptError(
 	}
 	var cause *migrationCause
 	if errors.As(context.Cause(attemptContext), &cause) {
-		return attemptOutcome{trigger: cause.reason, passive: cause.reason == "stall"}
+		return attemptOutcome{trigger: cause.reason, deadline: cause.deadline, passive: cause.reason == "stall"}
 	}
 	return attemptOutcome{trigger: fallbackReason, passive: true, err: nil}
 }
@@ -369,7 +377,11 @@ func classifyReadFailure(err error) string {
 	return "tcp_reset"
 }
 
-func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSpec, bool) {
+func (r *streamRuntime) prepareMigration(
+	reason string,
+	passive bool,
+	deadline time.Time,
+) (attemptSpec, bool) {
 	r.mu.Lock()
 	if r.terminal != "" || r.terminating || context.Cause(r.context) != nil {
 		r.mu.Unlock()
@@ -395,7 +407,50 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 		MultipleChoices:    r.multipleChoice,
 	})
 
-	targetLease, acquireErr := r.service.acquireBackend(r.id.String(), r.model, failedBackend.ID)
+	policy := migrate.Policy{
+		MaxMigrations:         uint64(r.policy.MaxMigrations),
+		MaxMigrationTokens:    r.policy.MaxMigrationTokens,
+		MaxStreamDuration:     r.policy.MaxStreamDuration,
+		AllowStructuredResume: r.policy.AllowStructuredResume,
+		AllowCrossVersion:     r.policy.AllowCrossVersion,
+		SeamWindowBytes:       r.policy.SeamWindowBytes,
+		TemplateMode:          r.policy.TemplateMode,
+	}
+	if reason == "drain" {
+		preflight, preflightErr := migrate.EvaluateEligibility(policy, migrate.EligibilitySnapshot{
+			MigrationsUsed:         migrationsUsed,
+			AccumulatedTokens:      usage.CompletionTokens,
+			Elapsed:                time.Since(createdAt),
+			TemplateVerdict:        conformance.VerdictSafe,
+			StructuredResponse:     r.structured,
+			OriginModelVersion:     "drain-preflight",
+			TargetModelVersion:     "drain-preflight",
+			TargetBackendAvailable: true,
+		})
+		if preflightErr != nil {
+			r.service.logger.Error("evaluate migration policy", "stream_id", r.id, "error", preflightErr)
+			r.recordMigrationRefusal("invalid_policy")
+			_ = r.finishError("migration_refused", "migration policy could not be evaluated", "invalid_policy")
+			return attemptSpec{}, false
+		}
+		if !preflight.Eligible() || !correctness.Eligible() {
+			r.refuseMigrationUntil(deadline, estimateWarning, preflight.Failures, correctness.Failures)
+			return attemptSpec{}, false
+		}
+	}
+
+	retryDeadline := deadline
+	if reason == "drain" && !retryDeadline.IsZero() {
+		maxDurationDeadline := createdAt.Add(r.policy.MaxStreamDuration)
+		if maxDurationDeadline.Before(retryDeadline) {
+			retryDeadline = maxDurationDeadline
+		}
+	}
+	targetLease, acquireErr := r.acquireMigrationTarget(reason, retryDeadline, failedBackend.ID)
+	if acquireErr != nil && context.Cause(r.context) != nil {
+		r.finishCanceledProducer()
+		return attemptSpec{}, false
+	}
 	targetAvailable := acquireErr == nil
 	target := backend.State{
 		Backend: backend.Backend{
@@ -407,15 +462,6 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 		target = targetLease.Backend()
 	}
 
-	policy := migrate.Policy{
-		MaxMigrations:         uint64(r.policy.MaxMigrations),
-		MaxMigrationTokens:    r.policy.MaxMigrationTokens,
-		MaxStreamDuration:     r.policy.MaxStreamDuration,
-		AllowStructuredResume: r.policy.AllowStructuredResume,
-		AllowCrossVersion:     r.policy.AllowCrossVersion,
-		SeamWindowBytes:       r.policy.SeamWindowBytes,
-		TemplateMode:          r.policy.TemplateMode,
-	}
 	eligibility, eligibilityErr := migrate.EvaluateEligibility(policy, migrate.EligibilitySnapshot{
 		MigrationsUsed:         migrationsUsed,
 		AccumulatedTokens:      usage.CompletionTokens,
@@ -440,7 +486,7 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 		if targetLease != nil {
 			targetLease.Release()
 		}
-		r.refuseMigration(estimateWarning, eligibility.Failures, correctness.Failures)
+		r.refuseMigrationUntil(deadline, estimateWarning, eligibility.Failures, correctness.Failures)
 		return attemptSpec{}, false
 	}
 
@@ -450,7 +496,7 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 	})
 	if rewriteErr != nil {
 		targetLease.Release()
-		r.refuseMigration(estimateWarning, nil, []migrate.CorrectnessFailure{migrate.FailureUnsupportedContinuationShape})
+		r.refuseMigrationUntil(deadline, estimateWarning, nil, []migrate.CorrectnessFailure{migrate.FailureUnsupportedContinuationShape})
 		return attemptSpec{}, false
 	}
 
@@ -502,6 +548,59 @@ func (r *streamRuntime) prepareMigration(reason string, passive bool) (attemptSp
 	}, true
 }
 
+func (r *streamRuntime) acquireMigrationTarget(
+	reason string,
+	deadline time.Time,
+	excluded backend.ID,
+) (*backend.Lease, error) {
+	for {
+		changed := r.service.backends.Changes()
+		var quarantineTimer *time.Timer
+		var quarantineExpired <-chan time.Time
+		if delay, exists, delayErr := r.service.backends.NextQuarantineExpiry(r.model, excluded); delayErr == nil && exists {
+			quarantineTimer = time.NewTimer(delay)
+			quarantineExpired = quarantineTimer.C
+		}
+		lease, err := r.service.acquireBackend(r.id.String(), r.model, excluded)
+		if err == nil || reason != "drain" || !errors.Is(err, backend.ErrNoEligibleBackend) || deadline.IsZero() {
+			if quarantineTimer != nil {
+				quarantineTimer.Stop()
+			}
+			return lease, err
+		}
+		if !time.Now().Before(deadline) {
+			if quarantineTimer != nil {
+				quarantineTimer.Stop()
+			}
+			// Recheck once at the boundary so simultaneous admission wins over
+			// the timeout rather than producing a false backend_available refusal.
+			return r.service.acquireBackend(r.id.String(), r.model, excluded)
+		}
+		deadlineTimer := time.NewTimer(time.Until(deadline))
+		select {
+		case <-r.context.Done():
+		case <-changed:
+		case <-quarantineExpired:
+		case <-deadlineTimer.C:
+		}
+		if quarantineTimer != nil && !quarantineTimer.Stop() {
+			select {
+			case <-quarantineTimer.C:
+			default:
+			}
+		}
+		if !deadlineTimer.Stop() {
+			select {
+			case <-deadlineTimer.C:
+			default:
+			}
+		}
+		if context.Cause(r.context) != nil {
+			return nil, context.Cause(r.context)
+		}
+	}
+}
+
 func (r *streamRuntime) reserveMigrationTarget(
 	failedLease *backend.Lease,
 	targetLease *backend.Lease,
@@ -527,8 +626,14 @@ func (r *streamRuntime) reserveMigrationTarget(
 	}
 	if reason != "" {
 		r.mu.Lock()
-		if r.pendingTrigger == "" && r.currentLease == targetLease {
-			r.pendingTrigger = reason
+		if r.currentLease == targetLease {
+			deadline := time.Time{}
+			fallback := false
+			if reason == "drain" {
+				deadline = time.Now().Add(defaultDrainTimeout)
+				fallback = true
+			}
+			r.mergePendingTriggerLocked(reason, deadline, fallback)
 		}
 		r.mu.Unlock()
 	}
@@ -579,21 +684,22 @@ func metricMigrationReason(reason string) string {
 	}
 }
 
-func (r *streamRuntime) refuseMigration(
+func (r *streamRuntime) refuseMigrationUntil(
+	deadline time.Time,
 	estimateWarning bool,
 	predicates []migrate.Predicate,
 	correctness []migrate.CorrectnessFailure,
 ) {
 	r.recordMigrationRefusals(predicates, correctness)
 	entries, reason := buildRefusalEntries(estimateWarning, predicates, correctness)
-	if err := r.appendNonTerminal(entries); err != nil && context.Cause(r.context) == nil {
+	if err := r.appendNonTerminalUntil(entries, deadline); err != nil && context.Cause(r.context) == nil {
 		r.service.logger.Error("append migration refusal warnings", "stream_id", r.id, "error", err)
 	} else if estimateWarning {
 		r.mu.Lock()
 		r.estimateWarned = true
 		r.mu.Unlock()
 	}
-	if err := r.finishError("migration_refused", "continuation is not safe", reason); err != nil &&
+	if err := r.finishErrorUntil(deadline, "migration_refused", "continuation is not safe", reason); err != nil &&
 		!errors.Is(err, journal.ErrTerminalState) {
 		r.service.logger.Error("close refused migration", "stream_id", r.id, "error", err)
 	}
@@ -677,6 +783,10 @@ func warningMessage(code string) string {
 }
 
 func (r *streamRuntime) appendNonTerminal(entries []journal.Entry) error {
+	return r.appendNonTerminalUntil(entries, time.Time{})
+}
+
+func (r *streamRuntime) appendNonTerminalUntil(entries []journal.Entry, deadline time.Time) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -697,7 +807,7 @@ func (r *streamRuntime) appendNonTerminal(entries []journal.Entry) error {
 			}
 			return r.degradedFeed.append(r.context, frames...)
 		}
-		mutationContext, cancelMutation := r.journalMutationContext()
+		mutationContext, cancelMutation := r.journalMutationContextUntil(deadline)
 		seq, err := r.service.journal.Append(mutationContext, r.id, entry)
 		cancelMutation()
 		if err != nil {
@@ -848,9 +958,9 @@ func isUTF8Boundary(value string, offset int) bool {
 	return offset == 0 || offset == len(value) || (value[offset]&0xc0) != 0x80
 }
 
-func (r *streamRuntime) triggerMigration(reason string, id backend.ID) bool {
+func (r *streamRuntime) triggerMigrationUntil(reason string, id backend.ID, deadline time.Time) bool {
 	if reason == "drain" || reason == "health" {
-		if r.refuseExternalTriggerIfIneligible(id) {
+		if r.refuseExternalTriggerIfIneligible(id, reason == "drain", deadline) {
 			return true
 		}
 	}
@@ -860,20 +970,43 @@ func (r *streamRuntime) triggerMigration(reason string, id backend.ID) bool {
 		return false
 	}
 	if r.attemptCancel == nil {
-		if r.pendingTrigger == "" {
-			r.pendingTrigger = reason
-		}
+		r.mergePendingTriggerLocked(reason, deadline, false)
 		return true
 	}
-	r.attemptCancel(&migrationCause{reason: reason})
+	r.attemptCancel(&migrationCause{reason: reason, deadline: deadline})
 	return true
+}
+
+func (r *streamRuntime) mergePendingTriggerLocked(reason string, deadline time.Time, fallback bool) {
+	if r.pendingTrigger == "" {
+		r.pendingTrigger = reason
+		r.pendingDeadline = deadline
+		r.pendingFallback = fallback
+		return
+	}
+	if r.pendingTrigger != "drain" || reason != "drain" {
+		return
+	}
+	if r.pendingFallback && !fallback {
+		r.pendingDeadline = deadline
+		r.pendingFallback = false
+		return
+	}
+	if r.pendingFallback == fallback &&
+		(r.pendingDeadline.IsZero() || (!deadline.IsZero() && deadline.Before(r.pendingDeadline))) {
+		r.pendingDeadline = deadline
+	}
 }
 
 // refuseExternalTriggerIfIneligible handles the drain/health ordering rule:
 // an attempt that cannot migrate receives its durable refusal before its
 // upstream context is canceled. Eligible attempts return to the normal
 // attempt-cancel path so the producer goroutine owns the handoff.
-func (r *streamRuntime) refuseExternalTriggerIfIneligible(id backend.ID) bool {
+func (r *streamRuntime) refuseExternalTriggerIfIneligible(
+	id backend.ID,
+	deferUnavailable bool,
+	deadline time.Time,
+) bool {
 	r.mu.Lock()
 	if r.terminal != "" || r.terminating || r.currentBackend.ID != id {
 		r.mu.Unlock()
@@ -924,11 +1057,16 @@ func (r *streamRuntime) refuseExternalTriggerIfIneligible(id backend.ID) bool {
 		AccumulatedText:    []byte(accumulated),
 		MultipleChoices:    r.multipleChoice,
 	})
+	if deferUnavailable && errors.Is(acquireErr, backend.ErrNoEligibleBackend) &&
+		correctness.Eligible() && len(eligibility.Failures) == 1 &&
+		eligibility.Failures[0] == migrate.PredicateBackendAvailable {
+		return false
+	}
 	if eligibility.Eligible() && correctness.Eligible() {
 		return false
 	}
 	entries, refusalReason := buildRefusalEntries(estimateWarning, eligibility.Failures, correctness.Failures)
-	closed := r.closeExternalMigrationRefusal(id, entries, refusalReason, estimateWarning)
+	closed := r.closeExternalMigrationRefusal(id, entries, refusalReason, estimateWarning, deadline)
 	if closed {
 		r.recordMigrationRefusals(eligibility.Failures, correctness.Failures)
 	}
@@ -940,6 +1078,7 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 	warnings []journal.Entry,
 	reason string,
 	estimateWarning bool,
+	deadline time.Time,
 ) bool {
 	r.mu.Lock()
 	if r.terminal != "" || r.terminating || r.currentBackend.ID != id {
@@ -952,7 +1091,7 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 	r.writeMu.Lock()
 	committed := make([]journal.Entry, 0, len(warnings))
 	for _, entry := range warnings {
-		mutationContext, cancelMutation := r.journalMutationContext()
+		mutationContext, cancelMutation := r.journalMutationContextUntil(deadline)
 		seq, err := r.service.journal.Append(mutationContext, r.id, entry)
 		cancelMutation()
 		if err != nil {
@@ -989,7 +1128,7 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 		r.failTerminalTransition()
 		return false
 	}
-	closeContext, cancel := context.WithTimeout(context.Background(), r.service.config.ReadinessTimeout)
+	closeContext, cancel := boundedContext(context.Background(), r.service.config.ReadinessTimeout, deadline)
 	err = r.service.journal.Close(closeContext, r.id, journal.Entry{Kind: journal.KindError, Payload: payload})
 	cancel()
 	if err != nil {
@@ -1035,13 +1174,27 @@ func (r *streamRuntime) closeExternalMigrationRefusal(
 }
 
 func (s *durableService) triggerBindings(reason string, id backend.ID, bindings []backend.Binding) {
+	s.triggerBindingsUntil(reason, id, bindings, time.Time{})
+}
+
+func (s *durableService) triggerBindingsUntil(
+	reason string,
+	id backend.ID,
+	bindings []backend.Binding,
+	deadline time.Time,
+) {
 	for _, binding := range bindings {
 		streamID, err := journal.ParseStreamID(binding.Owner)
 		if err != nil {
 			continue
 		}
 		if value, ok := s.streams.Load(streamID); ok {
-			value.(*streamRuntime).triggerMigration(reason, id)
+			runtime := value.(*streamRuntime)
+			if reason == "drain" {
+				go runtime.triggerMigrationUntil(reason, id, deadline)
+				continue
+			}
+			runtime.triggerMigrationUntil(reason, id, deadline)
 		}
 	}
 }
