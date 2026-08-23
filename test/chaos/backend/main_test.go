@@ -161,11 +161,14 @@ func newFirstTokenRecorder() *firstTokenRecorder {
 }
 
 func (recorder *firstTokenRecorder) Write(payload []byte) (int, error) {
-	written, err := recorder.ResponseRecorder.Write(payload)
-	if bytes.Contains(payload, []byte("token-000 ")) {
+	return recorder.ResponseRecorder.Write(payload)
+}
+
+func (recorder *firstTokenRecorder) Flush() {
+	recorder.ResponseRecorder.Flush()
+	if bytes.Contains(recorder.Body.Bytes(), []byte("token-000 ")) {
 		recorder.once.Do(func() { close(recorder.firstToken) })
 	}
-	return written, err
 }
 
 func TestBackendOOMFailsOnlyTheOriginalAttempt(t *testing.T) {
