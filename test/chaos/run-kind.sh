@@ -41,7 +41,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mapfile -t worker_nodes < <(kubectl get nodes -l 'node-role.kubernetes.io/worker' -o name | sort)
+# kubeadm (and therefore kind) does not guarantee a positive worker-role label.
+# Identify workers by excluding both current and legacy control-plane labels.
+mapfile -t worker_nodes < <(kubectl get nodes -l '!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/master' -o name | sort)
 if (( ${#worker_nodes[@]} < 3 )); then
   echo "kind chaos requires at least three worker nodes (two backend, one system); found ${#worker_nodes[@]}" >&2
   exit 1

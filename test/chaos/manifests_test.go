@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/labels"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 )
 
@@ -83,5 +84,41 @@ func TestKindTopologyIsolatesPhysicalBackendDisruptions(t *testing.T) {
 	}
 	if !strings.Contains(string(route), "seamWindowBytes: 64") {
 		t.Fatalf("kind policy does not match deterministic seam window %d", DeterministicSeamWindowBytes)
+	}
+}
+
+func TestKindRunnerDoesNotRequireOptionalWorkerRoleLabel(t *testing.T) {
+	t.Parallel()
+
+	const workerSelector = "!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/master"
+	runner, err := os.ReadFile("run-kind.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerText := string(runner)
+	if strings.Contains(runnerText, "-l 'node-role.kubernetes.io/worker'") {
+		t.Fatal("kind runner requires the optional Kubernetes worker-role label")
+	}
+	if !strings.Contains(runnerText, "-l '"+workerSelector+"'") {
+		t.Fatal("kind runner does not discover workers by excluding control-plane nodes")
+	}
+
+	selector, err := labels.Parse(workerSelector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		labels map[string]string
+		worker bool
+	}{
+		{name: "unlabelled worker", labels: nil, worker: true},
+		{name: "current control plane", labels: map[string]string{"node-role.kubernetes.io/control-plane": ""}},
+		{name: "legacy control plane", labels: map[string]string{"node-role.kubernetes.io/master": ""}},
+	}
+	for _, test := range tests {
+		if got := selector.Matches(labels.Set(test.labels)); got != test.worker {
+			t.Errorf("selector match for %s = %t, want %t", test.name, got, test.worker)
+		}
 	}
 }
