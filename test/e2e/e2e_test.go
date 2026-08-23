@@ -160,6 +160,9 @@ func consumeDeterministicStream(
 	notified := false
 	done := false
 	err = scanSSE(response.Body, func(eventType, data string) error {
+		if terminalErr := terminalStreamEventError(eventType, data); terminalErr != nil {
+			return terminalErr
+		}
 		if eventType == "streamweld.stream.migration" {
 			migrations++
 			return nil
@@ -202,6 +205,86 @@ func consumeDeterministicStream(
 		return streamID, output.String(), migrations, errors.New("stream ended without the OpenAI [DONE] sentinel")
 	}
 	return streamID, output.String(), migrations, nil
+}
+
+func terminalStreamEventError(eventType, data string) error {
+	switch eventType {
+	case "streamweld.stream.error", "streamweld.stream.stopped", "streamweld.reader.error":
+	default:
+		return nil
+	}
+
+	var payload struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Reason  string `json:"reason"`
+	}
+	detail := strings.TrimSpace(data)
+	if json.Unmarshal([]byte(data), &payload) == nil {
+		fields := make([]string, 0, 3)
+		if payload.Code != "" {
+			fields = append(fields, "code="+payload.Code)
+		}
+		if payload.Reason != "" {
+			fields = append(fields, "reason="+payload.Reason)
+		}
+		if payload.Message != "" {
+			fields = append(fields, "message="+payload.Message)
+		}
+		if len(fields) != 0 {
+			detail = strings.Join(fields, ", ")
+		}
+	}
+	if detail == "" {
+		detail = "no details"
+	}
+	return fmt.Errorf("received terminal SSE event %q (%s)", eventType, detail)
+}
+
+func TestTerminalStreamEventError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		eventType string
+		data      string
+		want      string
+	}{
+		{
+			name:      "stream error",
+			eventType: "streamweld.stream.error",
+			data:      `{"code":"migration_refused","message":"continuation is not safe","reason":"target_backend_unavailable"}`,
+			want:      "code=migration_refused, reason=target_backend_unavailable, message=continuation is not safe",
+		},
+		{
+			name:      "reader error",
+			eventType: "streamweld.reader.error",
+			data:      `{"code":"reader_lag_exceeded"}`,
+			want:      "code=reader_lag_exceeded",
+		},
+		{
+			name:      "malformed terminal payload",
+			eventType: "streamweld.stream.stopped",
+			data:      "not-json",
+			want:      "not-json",
+		},
+		{name: "migration is not terminal", eventType: "streamweld.stream.migration"},
+		{name: "done control event is not an error", eventType: "streamweld.stream.done"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := terminalStreamEventError(test.eventType, test.data)
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("terminalStreamEventError() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("terminalStreamEventError() = %v, want error containing %q", err, test.want)
+			}
+		})
+	}
 }
 
 func scanSSE(reader io.Reader, yield func(eventType, data string) error) error {
