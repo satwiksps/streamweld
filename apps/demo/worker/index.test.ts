@@ -87,10 +87,10 @@ describe("demo worker", () => {
   });
 
   it("proxies Vercel API calls to a configured shared Worker backend", async () => {
-    const upstreamFetch = vi.fn(async (request: Request) => Response.json({
-      url: request.url,
-      headers: Object.fromEntries(request.headers.entries()),
-    }));
+    const upstreamResponse = new Response(JSON.stringify({ marker: "relayed-body" }), {
+      headers: { "X-Upstream-Response": "preserved" },
+    });
+    const upstreamFetch = vi.fn(async (_request: Request) => upstreamResponse);
     vi.stubEnv("STREAMWELD_DEMO_UPSTREAM_ORIGIN", "https://worker.demo.test");
     vi.stubGlobal("fetch", upstreamFetch);
 
@@ -108,12 +108,15 @@ describe("demo worker", () => {
     ));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      url: "https://worker.demo.test/api/demo/health",
-      headers: {
-        accept: "application/json",
-        "x-streamweld-verbose": "1",
-      },
+    expect(response).not.toBe(upstreamResponse);
+    expect(await response.json()).toEqual({ marker: "relayed-body" });
+    expect(response.headers.get("X-Upstream-Response")).toBe("preserved");
+    const forwarded = upstreamFetch.mock.calls[0]?.[0];
+    expect(forwarded).toBeInstanceOf(Request);
+    expect(forwarded?.url).toBe("https://worker.demo.test/api/demo/health");
+    expect(Object.fromEntries(forwarded!.headers.entries())).toEqual({
+      accept: "application/json",
+      "x-streamweld-verbose": "1",
     });
     expect(upstreamFetch).toHaveBeenCalledOnce();
   });

@@ -11,7 +11,7 @@ const worker = createEphemeralWorker();
 export const maxDuration = 60;
 
 export default {
-  fetch(request: Request, context?: VercelFunctionContext): Promise<Response> {
+  async fetch(request: Request, context?: VercelFunctionContext): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.searchParams.get("__streamweld_path");
     url.searchParams.delete("__streamweld_path");
@@ -51,7 +51,15 @@ export default {
       for (const header of Array.from(upstreamRequest.headers.keys())) {
         if (!shouldForwardHeader(header)) upstreamRequest.headers.delete(header);
       }
-      return fetch(upstreamRequest);
+      const upstreamResponse = await fetch(upstreamRequest);
+      // Re-wrap cross-origin fetch responses at the Vercel function boundary.
+      // Returning the undici Response object directly can preserve its status
+      // and headers while the platform adapter loses the body stream.
+      return new Response(upstreamResponse.body, {
+        status: upstreamResponse.status,
+        statusText: upstreamResponse.statusText,
+        headers: upstreamResponse.headers,
+      });
     }
 
     if (process.env["VERCEL_ENV"] !== undefined) {
