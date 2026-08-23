@@ -360,8 +360,8 @@ func TestObservabilityExposesJournalDegradedGaugeOnOpenOutage(t *testing.T) {
 		`{"model":"degraded-model","stream":true,"messages":[{"role":"user","content":"go"}]}`,
 	))
 	defer closeDurableHTTPBody(t, response.Body)
-	if response.Header.Get(headerStreamID) == "" {
-		t.Error("degraded response omitted stream ID")
+	if got := response.Header.Get(headerStreamID); got != "" {
+		t.Errorf("degraded response claimed non-resumable stream ID %q", got)
 	}
 	_ = readAllDurableSSE(t, response.Body)
 	closeDurableHTTPBody(t, response.Body)

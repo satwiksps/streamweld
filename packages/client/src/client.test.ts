@@ -384,6 +384,17 @@ describe("createDurableStream", () => {
     expect(stream.id).toBeNull();
   });
 
+  it("rejects an initially degraded response that claims a resumable id", async () => {
+    const stream = createDurableStream({
+      url: baseURL,
+      body: requestBody(),
+      fetch: async () => sseResponse([
+        joinFrames(frame("message", null, chatChunk("degraded")), "data: [DONE]\n\n"),
+      ], id, "degraded"),
+    });
+    await expect(stream.result).rejects.toBeInstanceOf(StreamProtocolError);
+  });
+
   it("never retries a dropped initially degraded generation", async () => {
     let calls = 0;
     const stream = createDurableStream({

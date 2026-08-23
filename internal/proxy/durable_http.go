@@ -80,7 +80,6 @@ func (h *Handler) handleCompletion(writer http.ResponseWriter, request *http.Req
 	if resolution.degraded {
 		degradedBackend := resolution.degradedLease.Backend()
 		defer resolution.degradedLease.Release()
-		writer.Header().Set(headerStreamID, resolution.id.String())
 		writer.Header().Set(headerDurability, durabilityDegraded)
 		restoreRequestBody(request, normalized.Body)
 		stripStreamweldHeaders(request.Header)

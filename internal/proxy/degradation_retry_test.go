@@ -76,7 +76,7 @@ func TestJournalDegradationMarkerRetriesUntilRecovery(t *testing.T) {
 	}
 }
 
-func TestPreOpenJournalFailureSetsDegradedGauge(t *testing.T) {
+func TestPreOpenJournalFailureOmitsNonResumableIdentityAndSetsDegradedGauge(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		_, _ = io.Copy(io.Discard, request.Body)
 		startDurableBackendSSE(writer)
@@ -118,8 +118,8 @@ func TestPreOpenJournalFailureSetsDegradedGauge(t *testing.T) {
 	if got := response.Header.Get(headerDurability); got != durabilityDegraded {
 		t.Fatalf("durability header = %q, want %q", got, durabilityDegraded)
 	}
-	if got := response.Header.Get(headerStreamID); got == "" {
-		t.Fatal("degraded generation omitted its stream ID header")
+	if got := response.Header.Get(headerStreamID); got != "" {
+		t.Fatalf("degraded generation claimed non-resumable stream ID %q", got)
 	}
 	if got := server.durable.journalDegradedValue(); got != 1 {
 		t.Fatalf("journal degraded gauge = %d, want 1", got)
