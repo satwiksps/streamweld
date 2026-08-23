@@ -13,6 +13,13 @@ import (
 
 var kubernetesName = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$`)
 
+const (
+	backendOOMControlPort   = 8000
+	backendOOMArmAction     = "arm"
+	backendOOMTriggerAction = "trigger"
+	backendOOMResetAction   = "reset"
+)
+
 // Injector applies and restores one scenario around an attached stream cohort.
 type Injector interface {
 	Prepare(context.Context, Scenario) error
@@ -104,7 +111,7 @@ func (injector *KindInjector) Prepare(ctx context.Context, scenario Scenario) er
 	injector.originPod = ""
 	injector.originNode = ""
 	switch scenario {
-	case ScenarioPodKill, ScenarioRollingUpdate, ScenarioSpotReclaim, ScenarioUnsafe:
+	case ScenarioPodKill, ScenarioRollingUpdate, ScenarioSpotReclaim, ScenarioBackendOOM, ScenarioUnsafe:
 		if scenario == ScenarioUnsafe {
 			if _, err := injector.run(ctx, "set", "env", "deployment/"+injector.config.BackendDeployment,
 				"--namespace", injector.config.Namespace, "CHAOS_TEMPLATE_MODE=unsafe"); err != nil {
@@ -126,6 +133,9 @@ func (injector *KindInjector) Prepare(ctx context.Context, scenario Scenario) er
 			return err
 		}
 		injector.originPod = pod
+		if scenario == ScenarioBackendOOM {
+			return injector.backendOOMControl(ctx, backendOOMArmAction)
+		}
 		if scenario == ScenarioSpotReclaim {
 			node, err := injector.podNode(ctx, pod)
 			if err != nil {
@@ -139,7 +149,7 @@ func (injector *KindInjector) Prepare(ctx context.Context, scenario Scenario) er
 				"--for=jsonpath={.status.templateVerdict}=UNSAFE", "--timeout=120s")
 			return err
 		}
-	case ScenarioBackendOOM, ScenarioClientDrop, ScenarioExplicitStop, ScenarioRedisDown, ScenarioSlowConsumer:
+	case ScenarioClientDrop, ScenarioExplicitStop, ScenarioRedisDown, ScenarioSlowConsumer:
 		return nil
 	default:
 		return fmt.Errorf("unsupported kind scenario %q", scenario)
@@ -150,7 +160,7 @@ func (injector *KindInjector) Prepare(ctx context.Context, scenario Scenario) er
 // Inject performs the scenario only after every stream has produced a token.
 func (injector *KindInjector) Inject(ctx context.Context, scenario Scenario) error {
 	switch scenario {
-	case ScenarioPodKill, ScenarioSpotReclaim, ScenarioUnsafe:
+	case ScenarioPodKill, ScenarioSpotReclaim, ScenarioBackendOOM, ScenarioUnsafe:
 		if injector.originPod == "" {
 			return errors.New("kind injection has no prepared origin Pod")
 		}
@@ -163,6 +173,9 @@ func (injector *KindInjector) Inject(ctx context.Context, scenario Scenario) err
 		}
 		if err := injector.waitRouteBackends(ctx, 2); err != nil {
 			return err
+		}
+		if scenario == ScenarioBackendOOM {
+			return injector.backendOOMControl(ctx, backendOOMTriggerAction)
 		}
 		if scenario == ScenarioSpotReclaim {
 			if injector.originNode == "" {
@@ -190,7 +203,7 @@ func (injector *KindInjector) Inject(ctx context.Context, scenario Scenario) err
 		_, err := injector.run(ctx, "wait", "pods", "--namespace", injector.config.Namespace,
 			"--selector", "app.kubernetes.io/component=redis", "--for=delete", "--timeout=60s")
 		return err
-	case ScenarioBackendOOM, ScenarioClientDrop, ScenarioExplicitStop, ScenarioSlowConsumer:
+	case ScenarioClientDrop, ScenarioExplicitStop, ScenarioSlowConsumer:
 		return nil
 	default:
 		return fmt.Errorf("unsupported kind scenario %q", scenario)
@@ -200,6 +213,11 @@ func (injector *KindInjector) Inject(ctx context.Context, scenario Scenario) err
 // Restore returns the cluster to two safe deterministic backends and one Redis.
 func (injector *KindInjector) Restore(ctx context.Context, scenario Scenario) error {
 	var restoreErrors []error
+	if scenario == ScenarioBackendOOM && injector.originPod != "" {
+		if err := injector.backendOOMControl(ctx, backendOOMResetAction); err != nil {
+			restoreErrors = append(restoreErrors, err)
+		}
+	}
 	if scenario == ScenarioSpotReclaim && injector.originNode != "" {
 		if _, err := injector.run(ctx, "uncordon", injector.originNode); err != nil {
 			restoreErrors = append(restoreErrors, err)
@@ -244,6 +262,26 @@ func (injector *KindInjector) Restore(ctx context.Context, scenario Scenario) er
 		}
 	}
 	return errors.Join(restoreErrors...)
+}
+
+func (injector *KindInjector) backendOOMControl(ctx context.Context, action string) error {
+	if injector.originPod == "" {
+		return errors.New("backend-oom injection has no prepared origin Pod")
+	}
+	switch action {
+	case backendOOMArmAction, backendOOMTriggerAction, backendOOMResetAction:
+	default:
+		return fmt.Errorf("unsupported backend OOM control action %q", action)
+	}
+	rawPath := fmt.Sprintf(
+		"/api/v1/namespaces/%s/pods/%s:%d/proxy/_streamweld/test/backend-oom/%s",
+		injector.config.Namespace,
+		injector.originPod,
+		backendOOMControlPort,
+		action,
+	)
+	_, err := injector.run(ctx, "get", "--raw", rawPath)
+	return err
 }
 
 func (injector *KindInjector) waitBackend(ctx context.Context) error {

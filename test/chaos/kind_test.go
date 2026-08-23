@@ -77,6 +77,39 @@ func TestKindInjectorSelectsTheSurvivingScaleDownPod(t *testing.T) {
 	}
 }
 
+func TestKindBackendOOMTriggersOriginOnlyAfterReplacementAdmission(t *testing.T) {
+	t.Parallel()
+
+	runner := &recordingRunner{}
+	injector, err := NewKindInjector(testKindConfig(), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := injector.Prepare(ctx, ScenarioBackendOOM); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := injector.Inject(ctx, ScenarioBackendOOM); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	wantInOrder := []string{
+		"scale deployment/streamweld-chaos-backend --namespace streamweld-system --replicas=1",
+		"rollout status deployment/streamweld-chaos-backend",
+		"wait inferenceroute/deterministic-chaos --namespace streamweld-system --for=jsonpath={.status.healthyBackends}=1",
+		"get pods --namespace streamweld-system",
+		"get --raw /api/v1/namespaces/streamweld-system/pods/streamweld-chaos-backend-origin:8000/proxy/_streamweld/test/backend-oom/arm",
+		"scale deployment/streamweld-chaos-backend --namespace streamweld-system --replicas=2",
+		"rollout status deployment/streamweld-chaos-backend",
+		"wait inferenceroute/deterministic-chaos --namespace streamweld-system --for=jsonpath={.status.healthyBackends}=2",
+		"get --raw /api/v1/namespaces/streamweld-system/pods/streamweld-chaos-backend-origin:8000/proxy/_streamweld/test/backend-oom/trigger",
+	}
+	if !runner.containsInOrder(wantInOrder...) {
+		t.Fatalf("backend OOM commands are not strictly sequenced: %#v", runner.commands)
+	}
+}
+
 func (runner *recordingRunner) contains(parts ...string) bool {
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
@@ -96,6 +129,18 @@ func (runner *recordingRunner) contains(parts ...string) bool {
 	return false
 }
 
+func (runner *recordingRunner) containsInOrder(want ...string) bool {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	next := 0
+	for _, command := range runner.commands {
+		if next < len(want) && strings.Contains(strings.Join(command, " "), want[next]) {
+			next++
+		}
+	}
+	return next == len(want)
+}
+
 func TestKindInjectorUsesDistinctPhysicalInjections(t *testing.T) {
 	t.Parallel()
 
@@ -106,7 +151,7 @@ func TestKindInjectorUsesDistinctPhysicalInjections(t *testing.T) {
 		{ScenarioPodKill, [][]string{{"scale", "--replicas=1"}, {"scale", "--replicas=2"}, {"delete", "--force"}}},
 		{ScenarioRollingUpdate, [][]string{{"scale", "--replicas=1"}, {"set image", "kind-rollout"}, {"set image", "backend:kind"}}},
 		{ScenarioSpotReclaim, [][]string{{"cordon", "chaos-worker"}, {"drain", "--grace-period=0"}, {"uncordon", "chaos-worker"}}},
-		{ScenarioBackendOOM, nil},
+		{ScenarioBackendOOM, [][]string{{"--replicas=1"}, {"backend-oom/arm"}, {"--replicas=2"}, {"backend-oom/trigger"}, {"backend-oom/reset"}}},
 		{ScenarioClientDrop, nil},
 		{ScenarioExplicitStop, nil},
 		{ScenarioRedisDown, [][]string{{"streamweld-redis", "--replicas=0"}, {"streamweld-redis", "--replicas=1"}}},

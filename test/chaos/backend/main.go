@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -23,6 +24,10 @@ const (
 	modelName        = "streamweld/deterministic-chaos"
 	promptTokenCount = 16
 	maxRequestBytes  = 1 << 20
+
+	backendOOMArmPath     = "/_streamweld/test/backend-oom/arm"
+	backendOOMTriggerPath = "/_streamweld/test/backend-oom/trigger"
+	backendOOMResetPath   = "/_streamweld/test/backend-oom/reset"
 )
 
 var tokenPattern = regexp.MustCompile(`token-(\d+) `)
@@ -45,6 +50,68 @@ type completionRequest struct {
 	Stream              bool      `json:"stream"`
 	MaxTokens           int       `json:"max_tokens"`
 	MaxCompletionTokens int       `json:"max_completion_tokens"`
+}
+
+// backendOOMGate is a reusable, process-local synchronization point for the
+// remote kind fixture. It starts unarmed so standalone/local uses retain the
+// original immediate deterministic OOM behavior. The kind injector arms the
+// sole origin Pod before clients attach and triggers it only after a healthy
+// replacement has been admitted.
+type backendOOMGate struct {
+	mu      sync.Mutex
+	current *backendOOMGeneration
+}
+
+type backendOOMGeneration struct {
+	released  chan struct{}
+	triggered bool
+}
+
+func (gate *backendOOMGate) arm() bool {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.current != nil {
+		return false
+	}
+	gate.current = &backendOOMGeneration{released: make(chan struct{})}
+	return true
+}
+
+func (gate *backendOOMGate) trigger() bool {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.current == nil {
+		return false
+	}
+	gate.current.triggered = true
+	close(gate.current.released)
+	gate.current = nil
+	return true
+}
+
+func (gate *backendOOMGate) reset() {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.current == nil {
+		return
+	}
+	close(gate.current.released)
+	gate.current = nil
+}
+
+func (gate *backendOOMGate) awaitTrigger(ctx context.Context) bool {
+	gate.mu.Lock()
+	generation := gate.current
+	gate.mu.Unlock()
+	if generation == nil {
+		return true
+	}
+	select {
+	case <-generation.released:
+		return generation.triggered
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func main() {
@@ -118,6 +185,7 @@ func configFromEnv() (config, error) {
 
 func newHandler(settings config) http.Handler {
 	mux := http.NewServeMux()
+	backendOOM := &backendOOMGate{}
 	mux.HandleFunc("GET /health", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -127,13 +195,31 @@ func newHandler(settings config) http.Handler {
 			"data":   []map[string]string{{"id": modelName, "object": "model"}},
 		})
 	})
+	mux.HandleFunc("GET "+backendOOMArmPath, func(writer http.ResponseWriter, _ *http.Request) {
+		if !backendOOM.arm() {
+			writeJSON(writer, http.StatusConflict, errorBody("backend OOM gate is already armed"))
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]string{"status": "armed"})
+	})
+	mux.HandleFunc("GET "+backendOOMTriggerPath, func(writer http.ResponseWriter, _ *http.Request) {
+		if !backendOOM.trigger() {
+			writeJSON(writer, http.StatusConflict, errorBody("backend OOM gate is not armed"))
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]string{"status": "triggered"})
+	})
+	mux.HandleFunc("GET "+backendOOMResetPath, func(writer http.ResponseWriter, _ *http.Request) {
+		backendOOM.reset()
+		writeJSON(writer, http.StatusOK, map[string]string{"status": "reset"})
+	})
 	mux.HandleFunc("POST /v1/chat/completions", func(writer http.ResponseWriter, request *http.Request) {
-		handleCompletion(writer, request, settings)
+		handleCompletion(writer, request, settings, backendOOM)
 	})
 	return mux
 }
 
-func handleCompletion(writer http.ResponseWriter, request *http.Request, settings config) {
+func handleCompletion(writer http.ResponseWriter, request *http.Request, settings config, backendOOM *backendOOMGate) {
 	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBytes+1))
 	var completion completionRequest
 	if err := decoder.Decode(&completion); err != nil {
@@ -211,6 +297,9 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 			chunk["streamweld_chaos_raw_delta"] = content
 		}
 		writeSSE(writer, chunk)
+		if offset == 0 && scenario == "backend-oom" && start == 0 && !backendOOM.awaitTrigger(request.Context()) {
+			return
+		}
 		if offset == 0 && holdOriginalForPhysicalFailure(scenario, start) {
 			// The kind harness attaches every reader before it creates and admits
 			// a replacement backend. Keep the original producer in flight after

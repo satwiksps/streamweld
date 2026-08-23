@@ -53,6 +53,85 @@ func TestPhysicalFailureOriginalStaysInFlightUntilCanceled(t *testing.T) {
 	}
 }
 
+func TestBackendOOMGateHoldsOnlyOriginalsUntilTriggered(t *testing.T) {
+	t.Parallel()
+
+	handler := newHandler(config{defaultTokens: 12})
+	if response := performControlRequest(handler, backendOOMArmPath); response.Code != http.StatusOK {
+		t.Fatalf("arm status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if response := performControlRequest(handler, backendOOMArmPath); response.Code != http.StatusConflict {
+		t.Fatalf("duplicate arm status = %d, want %d", response.Code, http.StatusConflict)
+	}
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequestWithContext(requestContext, http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"streamweld/deterministic-chaos",
+		"messages":[{"role":"user","content":"streamweld-chaos:backend-oom:0"}],
+		"stream":true,
+		"max_tokens":8
+	}`))
+	original := newFirstTokenRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(original, request)
+		close(done)
+	}()
+
+	select {
+	case <-original.firstToken:
+	case <-time.After(time.Second):
+		t.Fatal("armed backend OOM attempt did not flush its first token")
+	}
+	select {
+	case <-done:
+		t.Fatal("armed backend OOM attempt completed before the trigger")
+	case <-time.After(25 * time.Millisecond):
+	}
+	if body := original.Body.String(); !strings.Contains(body, "token-000 ") ||
+		strings.Contains(body, "token-001 ") || strings.Contains(body, "backend_oom") {
+		t.Fatalf("held backend OOM response = %q", body)
+	}
+
+	continuation := performCompletion(t, handler, `{
+		"model":"streamweld/deterministic-chaos",
+		"messages":[
+			{"role":"user","content":"streamweld-chaos:backend-oom:0"},
+			{"role":"assistant","content":"token-000 "}
+		],
+		"stream":true,
+		"max_tokens":5
+	}`)
+	if strings.Contains(continuation.Body.String(), "backend_oom") || !strings.Contains(continuation.Body.String(), "[DONE]") {
+		t.Fatalf("continuation was blocked by the original-attempt gate: %q", continuation.Body.String())
+	}
+
+	if response := performControlRequest(handler, backendOOMTriggerPath); response.Code != http.StatusOK {
+		t.Fatalf("trigger status = %d, body = %q", response.Code, response.Body.String())
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("backend OOM attempt did not finish after the trigger")
+	}
+	if body := original.Body.String(); !strings.Contains(body, `"code":"backend_oom"`) || strings.Contains(body, "[DONE]") {
+		t.Fatalf("triggered backend OOM response = %q", body)
+	}
+	if response := performControlRequest(handler, backendOOMTriggerPath); response.Code != http.StatusConflict {
+		t.Fatalf("duplicate trigger status = %d, want %d", response.Code, http.StatusConflict)
+	}
+	if response := performControlRequest(handler, backendOOMArmPath); response.Code != http.StatusOK {
+		t.Fatalf("re-arm status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if response := performControlRequest(handler, backendOOMResetPath); response.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if response := performControlRequest(handler, backendOOMTriggerPath); response.Code != http.StatusConflict {
+		t.Fatalf("post-reset trigger status = %d, want %d", response.Code, http.StatusConflict)
+	}
+}
+
 func TestOnlyOriginalPhysicalFailureAttemptsAreHeld(t *testing.T) {
 	t.Parallel()
 
@@ -143,5 +222,12 @@ func performCompletion(t *testing.T, handler http.Handler, body string) *httptes
 	if response.Code != http.StatusOK {
 		t.Fatalf("completion status = %d, body = %q", response.Code, response.Body.String())
 	}
+	return response
+}
+
+func performControlRequest(handler http.Handler, path string) *httptest.ResponseRecorder {
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
 	return response
 }
