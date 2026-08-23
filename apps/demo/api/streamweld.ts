@@ -47,10 +47,19 @@ export default {
     }
 
     if (upstream !== null) {
-      const upstreamRequest = new Request(upstream, request);
-      for (const header of Array.from(upstreamRequest.headers.keys())) {
-        if (!shouldForwardHeader(header)) upstreamRequest.headers.delete(header);
+      const headers = new Headers();
+      for (const [header, value] of request.headers.entries()) {
+        if (shouldForwardHeader(header)) headers.set(header, value);
       }
+      const body = request.method === "GET" || request.method === "HEAD"
+        ? undefined
+        : await request.arrayBuffer();
+      // Construct an independent request instead of cloning the inbound one.
+      // Vercel aborts the inbound signal after the handler resolves; inheriting
+      // that signal cancels the still-streaming upstream response body.
+      const upstreamRequest = body === undefined
+        ? new Request(upstream, { method: request.method, headers })
+        : new Request(upstream, { method: request.method, headers, body });
       const upstreamResponse = await fetch(upstreamRequest);
       // Re-wrap cross-origin fetch responses at the Vercel function boundary.
       // Returning the undici Response object directly can preserve its status

@@ -94,9 +94,11 @@ describe("demo worker", () => {
     vi.stubEnv("STREAMWELD_DEMO_UPSTREAM_ORIGIN", "https://worker.demo.test");
     vi.stubGlobal("fetch", upstreamFetch);
 
-    const response = await vercelFunction.fetch(new Request(
+    const inboundAbort = new AbortController();
+    const inbound = new Request(
       "https://demo.test/api/streamweld?__streamweld_path=/api/demo/health",
       {
+        signal: inboundAbort.signal,
         headers: {
           Accept: "application/json",
           Authorization: "Bearer must-not-leak",
@@ -105,7 +107,9 @@ describe("demo worker", () => {
           "X-Vercel-Forwarded-For": "must-not-leak",
         },
       },
-    ));
+    );
+    const response = await vercelFunction.fetch(inbound);
+    inboundAbort.abort();
 
     expect(response.status).toBe(200);
     expect(response).not.toBe(upstreamResponse);
@@ -113,6 +117,7 @@ describe("demo worker", () => {
     expect(response.headers.get("X-Upstream-Response")).toBe("preserved");
     const forwarded = upstreamFetch.mock.calls[0]?.[0];
     expect(forwarded).toBeInstanceOf(Request);
+    expect(forwarded?.signal.aborted).toBe(false);
     expect(forwarded?.url).toBe("https://worker.demo.test/api/demo/health");
     expect(Object.fromEntries(forwarded!.headers.entries())).toEqual({
       accept: "application/json",
