@@ -22,6 +22,7 @@ type Pool struct {
 	mu      sync.Mutex
 	config  Config
 	records map[ID]*record
+	changed chan struct{}
 
 	nextSelection atomic.Uint64
 	running       atomic.Bool
@@ -72,11 +73,59 @@ func NewPool(config Config, initial ...Backend) (*Pool, error) {
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	pool := &Pool{config: config, records: make(map[ID]*record)}
+	pool := &Pool{config: config, records: make(map[ID]*record), changed: make(chan struct{})}
 	if err := pool.Replace(initial); err != nil {
 		return nil, err
 	}
 	return pool, nil
+}
+
+// Changes returns a channel that closes after the next pool mutation that can
+// affect backend selection. Callers must obtain a new channel after each
+// notification. Subscribe before rechecking state to avoid missing an
+// admission that races with the check. Lease-only changes do not signal this
+// channel; record-specific drain waiters use their own notifications.
+func (pool *Pool) Changes() <-chan struct{} {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	return pool.changed
+}
+
+// NextQuarantineExpiry returns the delay until the earliest otherwise
+// selectable backend for model leaves passive quarantine. The boolean is false
+// when eligibility can change only through a signaled pool mutation.
+func (pool *Pool) NextQuarantineExpiry(model string, excluded ...ID) (time.Duration, bool, error) {
+	if err := validateBackendMetadata("model", model, true); err != nil {
+		return 0, false, err
+	}
+	exclusions := make(map[ID]struct{}, len(excluded))
+	for _, id := range excluded {
+		if err := id.Validate(); err != nil {
+			return 0, false, fmt.Errorf("exclude backend: %w", err)
+		}
+		exclusions[id] = struct{}{}
+	}
+
+	now := pool.now()
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	var earliest time.Time
+	for _, record := range pool.records {
+		if record.retired || record.health != HealthHealthy || record.draining ||
+			!backendServesModel(record.backend, model) {
+			continue
+		}
+		if _, blocked := exclusions[record.backend.ID]; blocked || !now.Before(record.quarantinedUntil) {
+			continue
+		}
+		if earliest.IsZero() || record.quarantinedUntil.Before(earliest) {
+			earliest = record.quarantinedUntil
+		}
+	}
+	if earliest.IsZero() {
+		return 0, false, nil
+	}
+	return earliest.Sub(now), true, nil
 }
 
 // Upsert adds a backend or updates its controller-owned metadata without
@@ -94,6 +143,7 @@ func (pool *Pool) Upsert(backend Backend) (State, error) {
 	if record == nil {
 		record = newRecord(normalized)
 		pool.records[normalized.ID] = record
+		pool.notifySelectionLocked(record)
 	} else {
 		wasRetired := record.retired
 		updateRecord(record, normalized)
@@ -102,7 +152,7 @@ func (pool *Pool) Upsert(backend Backend) (State, error) {
 			pool.reviveLocked(record)
 		}
 		record.retired = false
-		pool.notifyLocked(record)
+		pool.notifySelectionLocked(record)
 	}
 	return pool.stateLocked(record, now), nil
 }
@@ -148,6 +198,7 @@ func (pool *Pool) replace(backends []Backend, admitNew bool) error {
 				record.health = HealthHealthy
 			}
 			pool.records[backend.ID] = record
+			pool.notifySelectionLocked(record)
 			continue
 		}
 		wasRetired := record.retired
@@ -165,14 +216,14 @@ func (pool *Pool) replace(backends []Backend, admitNew bool) error {
 			pool.reviveLocked(record)
 		}
 		record.retired = false
-		pool.notifyLocked(record)
+		pool.notifySelectionLocked(record)
 	}
 	for id, record := range pool.records {
 		if _, exists := seen[id]; exists || record.retired {
 			continue
 		}
 		pool.retireLocked(record)
-		pool.notifyLocked(record)
+		pool.notifySelectionLocked(record)
 		pool.cleanupRetiredLocked(record)
 	}
 	return nil
@@ -191,7 +242,7 @@ func (pool *Pool) Remove(id ID) (bool, error) {
 		return false, nil
 	}
 	pool.retireLocked(record)
-	pool.notifyLocked(record)
+	pool.notifySelectionLocked(record)
 	pool.cleanupRetiredLocked(record)
 	return true, nil
 }
@@ -387,7 +438,7 @@ func (pool *Pool) SetHealth(id ID, health Health) (Transition, error) {
 		if health != HealthUnhealthy {
 			record.lastProbeError = ""
 		}
-		pool.notifyLocked(record)
+		pool.notifySelectionLocked(record)
 	}
 	transition := Transition{Backend: pool.stateLocked(record, now), Changed: changed}
 	if health != HealthHealthy && len(record.leases) != 0 {
@@ -415,7 +466,7 @@ func (pool *Pool) MarkPassiveFailure(id ID) (Transition, error) {
 		record.quarantinedUntil = until
 	}
 	record.lastFailureAt = now
-	pool.notifyLocked(record)
+	pool.notifySelectionLocked(record)
 	transition := Transition{Backend: pool.stateLocked(record, now), Changed: true}
 	if !wasQuarantined {
 		transition.Bindings = bindingsLocked(record)
@@ -438,7 +489,7 @@ func (pool *Pool) MarkDraining(id ID) (DrainSnapshot, error) {
 	}
 	if !record.draining {
 		record.draining = true
-		pool.notifyLocked(record)
+		pool.notifySelectionLocked(record)
 	}
 	record.retirementDrain = false
 	return DrainSnapshot{
@@ -463,7 +514,7 @@ func (pool *Pool) Undrain(id ID) (State, error) {
 	if record.draining {
 		record.draining = false
 		record.retirementDrain = false
-		pool.notifyLocked(record)
+		pool.notifySelectionLocked(record)
 	}
 	return pool.stateLocked(record, now), nil
 }
@@ -654,7 +705,7 @@ func (pool *Pool) acquireLocked(record *record, owner string, now time.Time) (*L
 func (pool *Pool) beginRetainedDrainLocked(record *record, now time.Time) *RetainedDrain {
 	if !record.draining {
 		record.draining = true
-		pool.notifyLocked(record)
+		pool.notifySelectionLocked(record)
 	}
 	// A retained drain is an explicit administrative drain. If the controller
 	// revives this record before its leases finish, it must remain ineligible.
@@ -706,6 +757,12 @@ func (pool *Pool) stateLocked(record *record, now time.Time) State {
 func (pool *Pool) notifyLocked(record *record) {
 	close(record.changed)
 	record.changed = make(chan struct{})
+}
+
+func (pool *Pool) notifySelectionLocked(record *record) {
+	pool.notifyLocked(record)
+	close(pool.changed)
+	pool.changed = make(chan struct{})
 }
 
 func (pool *Pool) cleanupRetiredLocked(record *record) {

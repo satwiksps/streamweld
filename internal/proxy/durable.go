@@ -80,6 +80,8 @@ type streamRuntime struct {
 	toolTrackFailed bool
 	attemptCancel   context.CancelCauseFunc
 	pendingTrigger  string
+	pendingDeadline time.Time
+	pendingFallback bool
 
 	context      context.Context
 	cancel       context.CancelCauseFunc
@@ -602,6 +604,22 @@ func (r *streamRuntime) finishError(code, message, reason string) error {
 	return r.finishErrorWhen(code, message, reason, nil)
 }
 
+func (r *streamRuntime) finishErrorUntil(deadline time.Time, code, message, reason string) error {
+	return r.closeTerminalUntil(journal.KindError, errors.New(reason), nil, deadline, func() ([]byte, *stopResponse, error) {
+		_, usage := r.progress.Snapshot()
+		payload, err := json.Marshal(struct {
+			Code      string     `json:"code"`
+			Message   string     `json:"message"`
+			Reason    string     `json:"reason"`
+			Retriable bool       `json:"retriable"`
+			Usage     tokenUsage `json:"usage"`
+		}{
+			Code: code, Message: message, Reason: reason, Usage: usage,
+		})
+		return payload, nil, err
+	})
+}
+
 func (r *streamRuntime) finishErrorWhen(code, message, reason string, guard func() bool) error {
 	return r.closeTerminal(journal.KindError, errors.New(reason), guard, func() ([]byte, *stopResponse, error) {
 		_, usage := r.progress.Snapshot()
@@ -665,6 +683,16 @@ func (r *streamRuntime) closeTerminal(
 	guard func() bool,
 	buildPayload func() ([]byte, *stopResponse, error),
 ) error {
+	return r.closeTerminalUntil(kind, cause, guard, time.Time{}, buildPayload)
+}
+
+func (r *streamRuntime) closeTerminalUntil(
+	kind journal.EntryKind,
+	cause error,
+	guard func() bool,
+	deadline time.Time,
+	buildPayload func() ([]byte, *stopResponse, error),
+) error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 
@@ -691,7 +719,7 @@ func (r *streamRuntime) closeTerminal(
 	if degraded {
 		return r.finishDegradedLocked(kind, payload, stopResult)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), r.service.config.ReadinessTimeout)
+	ctx, cancel := boundedContext(context.Background(), r.service.config.ReadinessTimeout, deadline)
 	defer cancel()
 	if err := r.service.journal.Close(ctx, r.id, journal.Entry{Kind: kind, Payload: payload}); err != nil {
 		r.enterJournalDegradedLocked(err)
@@ -733,7 +761,23 @@ func (r *streamRuntime) closeTerminal(
 // independently bounded by ReadinessTimeout, so an execute-then-cancel result
 // is always observed and mirrored before terminal sequence allocation.
 func (r *streamRuntime) journalMutationContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(r.context), r.service.config.ReadinessTimeout)
+	return r.journalMutationContextUntil(time.Time{})
+}
+
+func (r *streamRuntime) journalMutationContextUntil(deadline time.Time) (context.Context, context.CancelFunc) {
+	return boundedContext(context.WithoutCancel(r.context), r.service.config.ReadinessTimeout, deadline)
+}
+
+func boundedContext(
+	parent context.Context,
+	timeout time.Duration,
+	deadline time.Time,
+) (context.Context, context.CancelFunc) {
+	timeoutDeadline := time.Now().Add(timeout)
+	if !deadline.IsZero() && deadline.Before(timeoutDeadline) {
+		return context.WithDeadline(parent, deadline)
+	}
+	return context.WithDeadline(parent, timeoutDeadline)
 }
 
 func (r *streamRuntime) failTerminalTransition() {
