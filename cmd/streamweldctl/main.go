@@ -43,6 +43,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "drain":
 		return runDrain(args[1:], stdout, stderr)
+	case "streams":
+		return runStreams(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -93,7 +95,7 @@ func runDrain(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: --timeout must be positive")
 		return 2
 	}
-	baseURL, err := parseDrainEndpoint(*endpoint)
+	baseURL, err := parseHTTPEndpoint(*endpoint)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "streamweldctl drain: %v\n", err)
 		return 2
@@ -142,7 +144,7 @@ func runDrain(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func parseDrainEndpoint(raw string) (*url.URL, error) {
+func parseHTTPEndpoint(raw string) (*url.URL, error) {
 	if raw == "" || strings.TrimSpace(raw) != raw {
 		return nil, errors.New("--endpoint must be an unpadded absolute HTTP(S) URL")
 	}
@@ -303,4 +305,5 @@ func printUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "  bench    run or verify the reproducible chaos benchmark matrix")
 	_, _ = fmt.Fprintln(writer, "  doctor   probe chat-template continuation conformance")
 	_, _ = fmt.Fprintln(writer, "  drain    drain one backend Pod across every proxy replica")
+	_, _ = fmt.Fprintln(writer, "  streams  inspect one durable stream's state")
 }

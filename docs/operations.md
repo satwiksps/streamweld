@@ -47,6 +47,24 @@ Reproducible rollout measurements are maintained with
 the chaos harness; deployment documentation does not publish an unmeasured
 savings number.
 
+## Inspecting a durable stream
+
+Use the proxy's public state endpoint to inspect one retained stream without
+reading or mutating its event journal:
+
+```sh
+kubectl -n streamweld-system port-forward service/streamweld-proxy 8080:8080
+
+streamweldctl streams \
+  --endpoint http://127.0.0.1:8080 \
+  01arz3ndektsv4rrffq69g5fav
+```
+
+The human view reports lifecycle status, resumability, backend handoffs,
+sequence bounds, usage, migrations, and terminal state. Add `--json` for the
+complete typed `GET /v1/streams/{stream_id}` response. The command accepts one
+canonical lowercase stream ULID and never follows redirects.
+
 <!-- streamweld:rollout-impact:start -->
 ### Generated local rollout grace-window model
 
