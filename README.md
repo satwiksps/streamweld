@@ -11,7 +11,8 @@
 
 Streamweld is a durable stream layer for self-hosted LLM inference: one OpenAI-compatible stream identity and append-only journal that can outlive both its reader connection and its current backend attempt.
 
-[Documentation](apps/docs-site/src/content/docs/index.mdx) ·
+[Live demo](https://streamweld.vercel.app/) ·
+[Documentation](https://streamweld.readthedocs.io/en/latest/) ·
 [Quickstart](#quickstart) ·
 [Architecture](#architecture) ·
 [Protocol](docs/protocol.md) ·
@@ -25,7 +26,9 @@ Streamweld is a durable stream layer for self-hosted LLM inference: one OpenAI-c
 > and the `v1alpha1` Kubernetes resources may change before the first stable
 > release.
 
-[▶ Play the 20-second terminal cast](docs/assets/streamweld-demo.cast) · [Run the failure lab locally](apps/demo/README.md)
+[▶ Open the live failure lab](https://streamweld.vercel.app/) ·
+[Play the 20-second terminal cast](docs/assets/streamweld-demo.cast) ·
+[Run the lab locally](apps/demo/README.md)
 
 ```sh
 asciinema play docs/assets/streamweld-demo.cast
@@ -161,7 +164,7 @@ kubectl -n streamweld-system delete pod "$ORIGIN_POD" --wait=false
 The same `curl` remains attached while the proxy records a migration and
 continues on the other compatible backend. The fixture is for protocol and
 rollout validation, not a production-model compatibility or performance claim.
-See the [ten-minute guide](apps/docs-site/src/content/docs/getting-started.md)
+See the [ten-minute guide](https://streamweld.readthedocs.io/en/latest/getting-started/)
 for teardown and the release/source distinction.
 
 Tear down every resource created by the walkthrough with one command:
@@ -226,7 +229,7 @@ These are protocol fixtures, not claims about real production models. No
 production row is published because no exact production image/model/tokenizer
 tuple was probed during this build. Add one only from a captured doctor report;
 strict policy refuses `UNSAFE` targets. See the
-[compatibility methodology](apps/docs-site/src/content/docs/reference/compatibility.md).
+[compatibility methodology](https://streamweld.readthedocs.io/en/latest/reference/compatibility/).
 
 ## Architecture
 
@@ -291,7 +294,7 @@ is in [`docs/client.md`](docs/client.md).
 
 The chart schema rejects unsafe layouts: memory journals cannot scale beyond one
 proxy, Redis mode needs a URL source, and the production owner relay needs mutual
-TLS. See the [full configuration reference](apps/docs-site/src/content/docs/reference/configuration.md)
+TLS. See the [full configuration reference](https://streamweld.readthedocs.io/en/latest/reference/configuration/)
 and [`deploy/helm/streamweld/values.yaml`](deploy/helm/streamweld/values.yaml).
 
 The Terraform demo creates a small CPU system pool plus on-demand and real Spot

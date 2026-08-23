@@ -12,6 +12,8 @@ Worker exposes a tiny OpenAI-shaped streaming backend plus five failure controls
 From the repository root, run `make demo` or `pnpm --filter @streamweld/demo dev`.
 No API key, model download, GPU, or external service is required.
 
+**Live deployment:** [streamweld.vercel.app](https://streamweld.vercel.app/)
+
 ## Deploy to Vercel
 
 Import the repository with these project settings so Vercel uses the app's
