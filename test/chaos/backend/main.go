@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	modelName        = "streamweld/deterministic-chaos"
-	promptTokenCount = 16
-	maxRequestBytes  = 1 << 20
+	modelName               = "streamweld/deterministic-chaos"
+	promptTokenCount        = 16
+	maxRequestBytes         = 1 << 20
+	slowConsumerBatchTokens = 1024
 
 	backendOOMArmPath     = "/_streamweld/test/backend-oom/arm"
 	backendOOMTriggerPath = "/_streamweld/test/backend-oom/trigger"
@@ -265,8 +266,14 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 	}
 	scenario := scenarioFromMessages(completion.Messages)
 	tokenDelay := settings.tokenDelay
+	batchTokens := 1
 	if scenario == "slow-consumer" {
 		tokenDelay = 0
+		// Coalescing logical tokens into a handful of ordinary SSE chunks keeps
+		// the byte-lag exercise deterministic without turning it into tens of
+		// thousands of serialized Redis appends. Output and token accounting
+		// remain identical to the unbatched fixture.
+		batchTokens = slowConsumerBatchTokens
 	}
 	failAt := -1
 	if start == 0 && (scenario == "backend-oom" || scenario == "unsafe-template") {
@@ -277,20 +284,21 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 	writer.Header().Set("Connection", "close")
 	writer.WriteHeader(http.StatusOK)
 	flush(writer)
-	for offset := 0; offset < generationLimit; offset++ {
+	for offset := 0; offset < generationLimit; {
 		if failAt >= 0 && offset == failAt {
 			if scenario == "backend-oom" {
 				writeSSE(writer, map[string]any{"error": map[string]string{"code": "backend_oom", "message": "deterministic injected backend OOM"}})
 			}
 			return
 		}
-		content := fmt.Sprintf("token-%03d ", generationStart+offset)
+		nextOffset := min(offset+batchTokens, generationLimit)
+		content := deterministicRange(generationStart+offset, generationStart+nextOffset)
 		chunk := map[string]any{
 			"id": "chatcmpl-chaos", "object": "chat.completion.chunk", "model": modelName,
 			"choices": []map[string]any{{"index": 0, "delta": map[string]string{"content": content}, "finish_reason": nil}},
 			"usage": map[string]int{
-				"prompt_tokens": promptTokenCount, "completion_tokens": offset + 1,
-				"total_tokens": promptTokenCount + offset + 1,
+				"prompt_tokens": promptTokenCount, "completion_tokens": nextOffset,
+				"total_tokens": promptTokenCount + nextOffset,
 			},
 		}
 		if start > 0 {
@@ -316,6 +324,7 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 				return
 			}
 		}
+		offset = nextOffset
 	}
 	writeSSE(writer, map[string]any{
 		"id": "chatcmpl-chaos", "object": "chat.completion.chunk", "model": modelName,

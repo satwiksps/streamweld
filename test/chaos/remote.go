@@ -238,8 +238,9 @@ func runRemoteScenario(
 	scenarioTokens := config.OutputTokens
 	if definition.Scenario == ScenarioSlowConsumer {
 		// Stay below the 4 MiB per-stream journal cap while producing enough
-		// data to fill the deliberately constrained client receive window.
-		scenarioTokens = max(scenarioTokens, 8192)
+		// data to exceed the byte-lag budget even after conservative allowances
+		// for client and kernel read-ahead.
+		scenarioTokens = max(scenarioTokens, 16384)
 	}
 	attached := make(chan struct {
 		stream *attachedStream
@@ -273,15 +274,11 @@ func runRemoteScenario(
 		return Result{}, err
 	}
 	if definition.Scenario == ScenarioSlowConsumer {
-		timer := time.NewTimer(config.SlowConsumerDelay)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+		if err := waitRemoteSlowConsumerProduction(
+			ctx, config.Client, proxyURL, streams, config.SlowConsumerDelay,
+		); err != nil {
 			closeRemoteStreams(streams)
-			return Result{}, ctx.Err()
+			return Result{}, err
 		}
 	}
 
@@ -368,6 +365,83 @@ func runRemoteScenario(
 	return result, nil
 }
 
+func waitRemoteSlowConsumerProduction(
+	ctx context.Context,
+	client *http.Client,
+	proxyURL string,
+	streams []*attachedStream,
+	settleDelay time.Duration,
+) error {
+	pollDelay := min(settleDelay, 100*time.Millisecond)
+	for {
+		allDone := true
+		for _, stream := range streams {
+			done, err := remoteStreamProductionDone(ctx, client, proxyURL, stream.id)
+			if err != nil {
+				return fmt.Errorf("observe slow-consumer stream %s production: %w", stream.id, err)
+			}
+			if !done {
+				allDone = false
+			}
+		}
+		if allDone {
+			// Let the already-produced suffix reach the byte-bounded reader
+			// delivery queues before the clients begin reading again.
+			return waitRemoteReconnect(ctx, settleDelay)
+		}
+		if err := waitRemoteReconnect(ctx, pollDelay); err != nil {
+			return fmt.Errorf("wait for slow-consumer production: %w", err)
+		}
+	}
+}
+
+func remoteStreamProductionDone(
+	ctx context.Context,
+	client *http.Client,
+	proxyURL, streamID string,
+) (bool, error) {
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		proxyURL+"/v1/streams/"+url.PathEscape(streamID),
+		nil,
+	)
+	if err != nil {
+		return false, err
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return false, err
+	}
+	payload, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	closeErr := response.Body.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return false, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("status %s: %s", response.Status, bytes.TrimSpace(payload))
+	}
+	var state struct {
+		Status    string `json:"status"`
+		Resumable bool   `json:"resumable"`
+	}
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return false, fmt.Errorf("decode state: %w", err)
+	}
+	switch state.Status {
+	case "open":
+		return false, nil
+	case "done":
+		if !state.Resumable {
+			return false, errors.New("completed stream is not resumable")
+		}
+		return true, nil
+	default:
+		return false, fmt.Errorf("production ended in unexpected state %q", state.Status)
+	}
+}
+
 func remoteOutputCorrect(definition Definition, terminal, output, canonical string) bool {
 	switch definition.Scenario {
 	case ScenarioExplicitStop, ScenarioUnsafe:
@@ -426,6 +500,11 @@ func attachRemoteStream(
 	request.Header.Set("Accept", "text/event-stream")
 	request.Header.Set("X-Streamweld-Verbose", "1")
 	request.Header.Set("X-Streamweld-Idempotency-Key", fmt.Sprintf("chaos-%s-%d-%d", scenario, index, time.Now().UnixNano()))
+	if scenario == ScenarioSlowConsumer {
+		// The receive-buffer constraint belongs only to the deliberately stalled
+		// first attachment. Do not let the normal-speed resume reuse this socket.
+		request.Close = true
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err

@@ -159,6 +159,62 @@ func chaosHTTPResponse(
 	}
 }
 
+func TestWaitRemoteSlowConsumerProductionWaitsForEveryTerminal(t *testing.T) {
+	t.Parallel()
+
+	calls := map[string]int{}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		streamID := strings.TrimPrefix(request.URL.Path, "/v1/streams/")
+		calls[streamID]++
+		status := "open"
+		if calls[streamID] >= 2 {
+			status = "done"
+		}
+		return chaosHTTPResponse(
+			request,
+			http.StatusOK,
+			nil,
+			fmt.Sprintf(`{"status":%q,"resumable":true}`, status),
+		), nil
+	})}
+	streams := []*attachedStream{{id: "slow-a"}, {id: "slow-b"}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitRemoteSlowConsumerProduction(
+		ctx, client, "http://proxy.example.test", streams, time.Millisecond,
+	); err != nil {
+		t.Fatalf("waitRemoteSlowConsumerProduction() error = %v", err)
+	}
+	for _, stream := range streams {
+		if calls[stream.id] < 2 {
+			t.Errorf("state calls for %s = %d, want at least 2", stream.id, calls[stream.id])
+		}
+	}
+}
+
+func TestWaitRemoteSlowConsumerProductionRejectsUnexpectedTerminal(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return chaosHTTPResponse(
+			request,
+			http.StatusOK,
+			nil,
+			`{"status":"error","resumable":true}`,
+		), nil
+	})}
+	err := waitRemoteSlowConsumerProduction(
+		context.Background(),
+		client,
+		"http://proxy.example.test",
+		[]*attachedStream{{id: "slow-error"}},
+		time.Millisecond,
+	)
+	if err == nil || !strings.Contains(err.Error(), `unexpected state "error"`) {
+		t.Fatalf("waitRemoteSlowConsumerProduction() error = %v", err)
+	}
+}
+
 type trackingReadCloser struct {
 	reader    *strings.Reader
 	readToEOF bool

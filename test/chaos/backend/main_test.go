@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,58 @@ import (
 	"testing"
 	"time"
 )
+
+func TestSlowConsumerBatchesLogicalTokensWithoutChangingOutput(t *testing.T) {
+	t.Parallel()
+
+	const tokens = 16384
+	response := performCompletion(t, newHandler(config{defaultTokens: 64}), `{
+		"model":"streamweld/deterministic-chaos",
+		"messages":[{"role":"user","content":"streamweld-chaos:slow-consumer:0"}],
+		"stream":true,
+		"max_tokens":16384
+	}`)
+
+	var output strings.Builder
+	chunks := 0
+	for _, line := range strings.Split(response.Body.String(), "\n") {
+		payload, found := strings.CutPrefix(line, "data: ")
+		if !found || payload == "[DONE]" {
+			continue
+		}
+		var event struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			t.Fatalf("decode SSE payload: %v", err)
+		}
+		if len(event.Choices) == 1 && event.Choices[0].FinishReason == nil && event.Choices[0].Delta.Content != "" {
+			chunks++
+			output.WriteString(event.Choices[0].Delta.Content)
+		}
+	}
+	if want := tokens / slowConsumerBatchTokens; chunks != want {
+		t.Fatalf("slow-consumer content chunks = %d, want %d", chunks, want)
+	}
+	// Allow a deliberately conservative eight complete batches to clear through
+	// the HTTP/SSE read-ahead and bounded kernel buffers. Even before counting
+	// SSE/envelope metadata, the eight remaining batches exceed the kind
+	// fixture's 64 KiB per-reader budget.
+	const readerLagBudget = 64 << 10
+	const conservativelyDrainedBatches = 8
+	queuedContent := deterministicRange(conservativelyDrainedBatches*slowConsumerBatchTokens, tokens)
+	if len(queuedContent) <= readerLagBudget {
+		t.Fatalf("slow-consumer queued content = %d bytes, want over %d", len(queuedContent), readerLagBudget)
+	}
+	if got, want := output.String(), deterministicRange(0, tokens); got != want {
+		t.Fatalf("batched slow-consumer output length = %d, want exact %d-byte canonical output", len(got), len(want))
+	}
+}
 
 func TestPhysicalFailureOriginalStaysInFlightUntilCanceled(t *testing.T) {
 	t.Parallel()

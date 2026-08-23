@@ -21,6 +21,7 @@ func TestKindManifestsAreValidMultiDocumentYAML(t *testing.T) {
 	}{
 		{path: "kind-config.yaml", documents: 1},
 		{path: filepath.Join("manifests", "backend.yaml"), documents: 2},
+		{path: filepath.Join("manifests", "proxy-nodeport.yaml"), documents: 1},
 		{path: filepath.Join("manifests", "route.yaml"), documents: 2},
 	}
 	for _, test := range tests {
@@ -53,6 +54,68 @@ func TestKindManifestsAreValidMultiDocumentYAML(t *testing.T) {
 	}
 }
 
+func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
+	t.Parallel()
+
+	kindConfig, err := os.ReadFile("kind-config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kindText := strings.ReplaceAll(string(kindConfig), "\r\n", "\n")
+	if strings.Contains(kindText, "extraPortMappings:") {
+		t.Fatal("kind config still inserts Docker's buffered published-port path")
+	}
+
+	service, err := os.ReadFile(filepath.Join("manifests", "proxy-nodeport.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceText := strings.ReplaceAll(string(service), "\r\n", "\n")
+	for _, required := range []string{"type: NodePort", "nodePort: 30080"} {
+		if !strings.Contains(serviceText, required) {
+			t.Errorf("chaos proxy Service is missing %q", required)
+		}
+	}
+	if strings.Contains(serviceText, "kind: NetworkPolicy") {
+		t.Fatal("chaos NodePort manifest overrides the production ingress policy")
+	}
+
+	runner, err := os.ReadFile("run-kind.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerText := string(runner)
+	if !strings.Contains(runnerText, "kubectl apply -f test/chaos/manifests/proxy-nodeport.yaml") {
+		t.Fatal("kind runner does not install the direct proxy NodePort")
+	}
+	for _, required := range []string{
+		`docker inspect --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}'`,
+		`proxy_url="http://${proxy_node_ip}:30080"`,
+		`--proxy-url "$proxy_url"`,
+	} {
+		if !strings.Contains(runnerText, required) {
+			t.Errorf("kind runner is missing intermediary-free proxy routing %q", required)
+		}
+	}
+	if !strings.Contains(runnerText, "--set reader.maxLagBytes=65536") {
+		t.Fatal("kind runner reader budget no longer matches the deterministic slow-consumer workload")
+	}
+	for _, required := range []string{
+		"proxy.podSecurityContext.sysctls[0].name=net.ipv4.tcp_wmem",
+		"proxy.podSecurityContext.sysctls[0].value=4096 4096 4096",
+	} {
+		if !strings.Contains(runnerText, required) {
+			t.Errorf("kind runner is missing bounded proxy TCP send memory %q", required)
+		}
+	}
+	if strings.Contains(runnerText, "service/streamweld-proxy 18080:8080") {
+		t.Fatal("kind runner still places kubectl port-forward buffering in the slow-reader path")
+	}
+	if strings.Contains(runnerText, "127.0.0.1:18080") {
+		t.Fatal("kind runner still uses a Docker-published proxy port")
+	}
+}
+
 func TestKindTopologyIsolatesPhysicalBackendDisruptions(t *testing.T) {
 	t.Parallel()
 
@@ -68,6 +131,10 @@ func TestKindTopologyIsolatesPhysicalBackendDisruptions(t *testing.T) {
 	}
 	if got := strings.Count(string(kindConfig), "streamweld-chaos-role: system"); got != 1 {
 		t.Fatalf("kind system worker labels = %d, want 1", got)
+	}
+	const kindNodeImage = "kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f"
+	if got := strings.Count(string(kindConfig), kindNodeImage); got != 4 {
+		t.Fatalf("pinned kind node image count = %d, want 4", got)
 	}
 
 	backend, err := os.ReadFile(filepath.Join("manifests", "backend.yaml"))
@@ -133,13 +200,17 @@ func TestKindRunnerPreservesFailureDiagnostics(t *testing.T) {
 	runnerText := strings.ReplaceAll(string(runner), "\r\n", "\n")
 	for _, required := range []string{
 		"collect_failure_diagnostics",
+		`[[ "$created_cluster" == true ]]`,
+		`[[ "$current_context" == "kind-$cluster_name" ]]`,
+		"kind chaos requires a fresh dedicated cluster",
+		"kind chaos requires Kubernetes >=1.32 for pod-scoped net.ipv4.tcp_wmem",
+		"kind chaos requires Linux >=4.15 for pod-scoped net.ipv4.tcp_wmem",
 		"capture_kubectl resources.txt get all --namespace streamweld-system -o wide",
 		"capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp",
 		"capture_component_logs proxy app.kubernetes.io/component=proxy",
 		"capture_component_logs operator app.kubernetes.io/component=operator",
 		"capture_component_logs backend app.kubernetes.io/name=streamweld-chaos-backend",
 		"capture_component_logs redis app.kubernetes.io/component=redis",
-		"if (( status != 0 )); then\n    collect_failure_diagnostics\n  fi\n  cleanup\n  exit \"$status\"",
 	} {
 		if !strings.Contains(runnerText, required) {
 			t.Errorf("kind runner is missing failure-diagnostic contract %q", required)

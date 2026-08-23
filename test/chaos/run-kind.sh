@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-for command in docker kind kubectl helm go curl; do
+for command in docker kind kubectl helm go curl uname; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required kind-chaos command is missing: $command" >&2
     exit 1
@@ -16,7 +16,6 @@ results_dir="${STREAMWELD_CHAOS_RESULTS_DIR:-$forward_dir/results}"
 diagnostics_dir="$results_dir/diagnostics"
 cluster_name="${KIND_CLUSTER_NAME:-}"
 created_cluster=false
-proxy_forward_pid=""
 backend_forward_pid=""
 
 capture_kubectl() {
@@ -72,15 +71,13 @@ collect_failure_diagnostics() {
   capture_component_logs backend app.kubernetes.io/name=streamweld-chaos-backend
   capture_component_logs redis app.kubernetes.io/component=redis
 
-  for name in proxy backend; do
-    if [[ -f "$forward_dir/$name.log" ]]; then
-      cp "$forward_dir/$name.log" "$diagnostics_dir/port-forward-$name.log"
-    fi
-  done
+  if [[ -f "$forward_dir/backend.log" ]]; then
+    cp "$forward_dir/backend.log" "$diagnostics_dir/port-forward-backend.log"
+  fi
 }
 
 cleanup() {
-  for pid in "$proxy_forward_pid" "$backend_forward_pid"; do
+  for pid in "$backend_forward_pid"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" >/dev/null 2>&1 || true
       wait "$pid" >/dev/null 2>&1 || true
@@ -93,28 +90,70 @@ cleanup() {
 
 on_exit() {
   local status=$?
+  local current_context=""
   trap - EXIT
   set +e
-  if (( status != 0 )); then
-    collect_failure_diagnostics
+  if (( status != 0 )) && [[ "$created_cluster" == true ]]; then
+    current_context="$(kubectl config current-context 2>/dev/null || true)"
+    if [[ "$current_context" == "kind-$cluster_name" ]]; then
+      collect_failure_diagnostics
+    else
+      echo "kind chaos failed before its dedicated context became active; skipping Kubernetes diagnostics" >&2
+    fi
   fi
   cleanup
   exit "$status"
 }
 trap on_exit EXIT
 
-current_context="$(kubectl config current-context 2>/dev/null || true)"
-if [[ -z "$cluster_name" && "$current_context" == kind-* ]] && kubectl cluster-info >/dev/null 2>&1; then
-  cluster_name="${current_context#kind-}"
-else
-  cluster_name="${cluster_name:-streamweld-chaos}"
-  if kind get clusters 2>/dev/null | grep -Fxq "$cluster_name"; then
-    kubectl config use-context "kind-$cluster_name" >/dev/null
-  else
-    created_cluster=true
-    kind create cluster --name "$cluster_name" --config test/chaos/kind-config.yaml --wait 120s
-  fi
+if [[ "$(uname -s)" != Linux ]]; then
+  echo "kind chaos requires a Linux host for direct, intermediary-free access to the kind NodePort" >&2
+  exit 1
 fi
+cluster_name="${cluster_name:-streamweld-chaos}"
+if kind get clusters 2>/dev/null | grep -Fxq "$cluster_name"; then
+  echo "kind chaos requires a fresh dedicated cluster; delete $cluster_name or choose a new KIND_CLUSTER_NAME" >&2
+  exit 1
+fi
+created_cluster=true
+kind create cluster --name "$cluster_name" --config test/chaos/kind-config.yaml --wait 120s
+
+# net.ipv4.tcp_wmem is a safe, pod-namespaced sysctl starting in Kubernetes
+# 1.32 and requires Linux 4.15 or newer. Fail before image builds and Helm
+# installation if the pinned cluster cannot honor the slow-reader contract.
+kubelet_version="$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')"
+if [[ ! "$kubelet_version" =~ ^v([0-9]+)\.([0-9]+)\. ]]; then
+  echo "cannot determine Kubernetes version from kubelet version: $kubelet_version" >&2
+  exit 1
+fi
+kubernetes_major="${BASH_REMATCH[1]}"
+kubernetes_minor="${BASH_REMATCH[2]}"
+if (( kubernetes_major < 1 || (kubernetes_major == 1 && kubernetes_minor < 32) )); then
+  echo "kind chaos requires Kubernetes >=1.32 for pod-scoped net.ipv4.tcp_wmem; found $kubelet_version" >&2
+  exit 1
+fi
+mapfile -t node_kernels < <(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.nodeInfo.kernelVersion}{"\n"}{end}')
+for node_kernel in "${node_kernels[@]}"; do
+  node_name="${node_kernel%%=*}"
+  kernel_version="${node_kernel#*=}"
+  if [[ ! "$kernel_version" =~ ^([0-9]+)\.([0-9]+) ]]; then
+    echo "cannot determine Linux kernel version for $node_name: $kernel_version" >&2
+    exit 1
+  fi
+  kernel_major="${BASH_REMATCH[1]}"
+  kernel_minor="${BASH_REMATCH[2]}"
+  if (( kernel_major < 4 || (kernel_major == 4 && kernel_minor < 15) )); then
+    echo "kind chaos requires Linux >=4.15 for pod-scoped net.ipv4.tcp_wmem; $node_name runs $kernel_version" >&2
+    exit 1
+  fi
+done
+
+proxy_node_ip="$(docker inspect --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}' "${cluster_name}-control-plane")"
+if [[ ! "$proxy_node_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  echo "cannot determine the direct kind control-plane IPv4 address: $proxy_node_ip" >&2
+  exit 1
+fi
+proxy_url="http://${proxy_node_ip}:30080"
 
 # kubeadm (and therefore kind) does not guarantee a positive worker-role label.
 # Identify workers by excluding both current and legacy control-plane labels.
@@ -144,8 +183,10 @@ kind load docker-image --name "$cluster_name" \
 kubectl create namespace streamweld-system --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f test/chaos/manifests/backend.yaml
 kubectl rollout status deployment/streamweld-chaos-backend --namespace streamweld-system --timeout=180s
-# Ordinary 64-token scenarios stay below the reader budget during injection,
-# while the zero-delay 8,192-token slow-consumer case still exceeds it.
+# Ordinary 64-token scenarios stay below the reader budget during injection.
+# The pod-scoped TCP send bound and 16-frame slow workload leave more than
+# 64 KiB queued in byte-bounded reader delivery even with conservative
+# read-ahead allowance.
 helm upgrade --install streamweld deploy/helm/streamweld \
   --namespace streamweld-system \
   --create-namespace \
@@ -155,6 +196,8 @@ helm upgrade --install streamweld deploy/helm/streamweld \
   --set proxy.image.pullPolicy=Never \
   --set proxy.backendURL=http://streamweld-chaos-backend:8000 \
   --set proxy.nodeSelector.streamweld-chaos-role=system \
+  --set-string 'proxy.podSecurityContext.sysctls[0].name=net.ipv4.tcp_wmem' \
+  --set-string 'proxy.podSecurityContext.sysctls[0].value=4096 4096 4096' \
   --set journal.backend=redis \
   --set reader.maxLagBytes=65536 \
   --set redis.enabled=true \
@@ -168,6 +211,7 @@ helm upgrade --install streamweld deploy/helm/streamweld \
   --timeout 180s
 
 kubectl apply -f test/chaos/manifests/route.yaml
+kubectl apply -f test/chaos/manifests/proxy-nodeport.yaml
 kubectl wait inferenceroute/deterministic-chaos \
   --namespace streamweld-system \
   --for=condition=Ready \
@@ -178,27 +222,28 @@ kubectl wait inferenceroute/deterministic-chaos \
   --timeout=180s
 
 mkdir -p "$forward_dir"
-kubectl port-forward --namespace streamweld-system service/streamweld-proxy 18080:8080 >"$forward_dir/proxy.log" 2>&1 &
-proxy_forward_pid=$!
 kubectl port-forward --namespace streamweld-system service/streamweld-chaos-backend 18081:8000 >"$forward_dir/backend.log" 2>&1 &
 backend_forward_pid=$!
 for _ in $(seq 1 60); do
-  if curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null && \
+  if curl --fail --silent "$proxy_url/healthz" >/dev/null && \
      curl --fail --silent http://127.0.0.1:18081/health >/dev/null; then
     break
   fi
-  if ! kill -0 "$proxy_forward_pid" >/dev/null 2>&1 || ! kill -0 "$backend_forward_pid" >/dev/null 2>&1; then
-    cat "$forward_dir/proxy.log" "$forward_dir/backend.log" >&2
+  if ! kill -0 "$backend_forward_pid" >/dev/null 2>&1; then
+    cat "$forward_dir/backend.log" >&2
     exit 1
   fi
   sleep 1
 done
-curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null
+if ! curl --fail --silent "$proxy_url/healthz" >/dev/null; then
+  echo "direct proxy NodePort is unreachable at $proxy_url; intermediary-free slow-reader testing is required" >&2
+  exit 1
+fi
 curl --fail --silent http://127.0.0.1:18081/health >/dev/null
 
 go run ./cmd/streamweldctl bench \
   --profile kind \
-  --proxy-url http://127.0.0.1:18080 \
+  --proxy-url "$proxy_url" \
   --direct-url http://127.0.0.1:18081 \
   --streams "${STREAMWELD_CHAOS_STREAMS:-8}" \
   --tokens "${STREAMWELD_CHAOS_TOKENS:-64}" \
