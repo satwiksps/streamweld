@@ -10,8 +10,10 @@ import (
 )
 
 type recordingRunner struct {
-	mu       sync.Mutex
-	commands [][]string
+	mu           sync.Mutex
+	commands     [][]string
+	podLists     []string
+	podListCalls int
 }
 
 func (runner *recordingRunner) Run(_ context.Context, args ...string) (string, error) {
@@ -20,12 +22,58 @@ func (runner *recordingRunner) Run(_ context.Context, args ...string) (string, e
 	runner.commands = append(runner.commands, append([]string(nil), args...))
 	joined := strings.Join(args, " ")
 	switch {
-	case strings.Contains(joined, "jsonpath={.items[0].metadata.name}"):
-		return "streamweld-chaos-backend-origin", nil
 	case strings.Contains(joined, "jsonpath={.spec.nodeName}"):
 		return "streamweld-chaos-worker", nil
+	case strings.Contains(joined, "get pods") && strings.Contains(joined, "--output=json"):
+		if len(runner.podLists) != 0 {
+			index := min(runner.podListCalls, len(runner.podLists)-1)
+			runner.podListCalls++
+			return runner.podLists[index], nil
+		}
+		return `{"items":[{
+			"metadata":{"name":"streamweld-chaos-backend-origin"},
+			"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}
+		}]}`, nil
 	default:
 		return "ok", nil
+	}
+}
+
+func TestKindInjectorSelectsTheSurvivingScaleDownPod(t *testing.T) {
+	t.Parallel()
+
+	ready := `"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}`
+	runner := &recordingRunner{podLists: []string{
+		`{"items":[` +
+			`{"metadata":{"name":"streamweld-chaos-backend-terminating"},` + ready + `},` +
+			`{"metadata":{"name":"streamweld-chaos-backend-survivor"},` + ready + `}` +
+			`]}`,
+		`{"items":[` +
+			`{"metadata":{"name":"streamweld-chaos-backend-terminating",` +
+			`"deletionTimestamp":"2026-08-23T04:31:26Z"},` + ready + `},` +
+			`{"metadata":{"name":"streamweld-chaos-backend-survivor"},` + ready + `}` +
+			`]}`,
+	}}
+	injector, err := NewKindInjector(testKindConfig(), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := injector.Prepare(ctx, ScenarioPodKill); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := injector.Inject(ctx, ScenarioPodKill); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if !runner.contains("delete", "pod/streamweld-chaos-backend-survivor") {
+		t.Fatalf("commands do not delete the surviving Pod: %#v", runner.commands)
+	}
+	if runner.contains("delete", "pod/streamweld-chaos-backend-terminating") {
+		t.Fatalf("commands delete the already-terminating Pod: %#v", runner.commands)
+	}
+	if runner.podListCalls < 2 {
+		t.Fatalf("Pod selection did not wait for scale-down convergence: %d list calls", runner.podListCalls)
 	}
 }
 

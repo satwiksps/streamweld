@@ -2,6 +2,7 @@ package chaos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -120,7 +121,7 @@ func (injector *KindInjector) Prepare(ctx context.Context, scenario Scenario) er
 		if err := injector.waitRouteBackends(ctx, 1); err != nil {
 			return err
 		}
-		pod, err := injector.firstBackendPod(ctx)
+		pod, err := injector.soleLiveBackendPod(ctx)
 		if err != nil {
 			return err
 		}
@@ -258,18 +259,62 @@ func (injector *KindInjector) waitRouteBackends(ctx context.Context, count int) 
 	return err
 }
 
-func (injector *KindInjector) firstBackendPod(ctx context.Context) (string, error) {
-	output, err := injector.run(ctx, "get", "pods", "--namespace", injector.config.Namespace,
-		"--selector", injector.config.BackendSelector,
-		"--field-selector=status.phase=Running", "--sort-by=.metadata.creationTimestamp",
-		"--output=jsonpath={.items[0].metadata.name}")
-	if err != nil {
-		return "", err
+func (injector *KindInjector) soleLiveBackendPod(ctx context.Context) (string, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	lastState := "no Pod list observed"
+	for {
+		output, err := injector.run(ctx, "get", "pods", "--namespace", injector.config.Namespace,
+			"--selector", injector.config.BackendSelector,
+			"--field-selector=status.phase=Running", "--output=json")
+		if err != nil {
+			return "", err
+		}
+		var pods struct {
+			Items []struct {
+				Metadata struct {
+					Name              string  `json:"name"`
+					DeletionTimestamp *string `json:"deletionTimestamp"`
+				} `json:"metadata"`
+				Status struct {
+					Phase      string `json:"phase"`
+					Conditions []struct {
+						Type   string `json:"type"`
+						Status string `json:"status"`
+					} `json:"conditions"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(output), &pods); err != nil {
+			return "", fmt.Errorf("decode backend Pods: %w", err)
+		}
+		livePods := make([]string, 0, len(pods.Items))
+		readyPods := make([]string, 0, len(pods.Items))
+		for _, pod := range pods.Items {
+			if pod.Metadata.DeletionTimestamp != nil {
+				continue
+			}
+			livePods = append(livePods, pod.Metadata.Name)
+			for _, condition := range pod.Status.Conditions {
+				if pod.Status.Phase == "Running" && condition.Type == "Ready" && condition.Status == "True" {
+					readyPods = append(readyPods, pod.Metadata.Name)
+					break
+				}
+			}
+		}
+		if len(livePods) == 1 && len(readyPods) == 1 {
+			if !kubernetesName.MatchString(readyPods[0]) {
+				return "", fmt.Errorf("kubectl returned invalid backend Pod %q", readyPods[0])
+			}
+			return readyPods[0], nil
+		}
+		lastState = fmt.Sprintf("%d non-terminating and %d Ready", len(livePods), len(readyPods))
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("wait for exactly one live Ready backend Pod (%s): %w", lastState, ctx.Err())
+		case <-ticker.C:
+		}
 	}
-	if !kubernetesName.MatchString(output) {
-		return "", fmt.Errorf("kubectl returned invalid backend Pod %q", output)
-	}
-	return output, nil
 }
 
 func (injector *KindInjector) podNode(ctx context.Context, pod string) (string, error) {
