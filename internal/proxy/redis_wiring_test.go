@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	redislib "github.com/redis/go-redis/v9"
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 func TestNewServerWiresRedisJournalAndRegistryFromConfig(t *testing.T) {
@@ -24,7 +23,7 @@ func TestNewServerWiresRedisJournalAndRegistryFromConfig(t *testing.T) {
 	config.RedisKeyPrefix = "wiring-test"
 	config.ReaderMaxLagBytes = 64
 
-	server, err := NewServer(config, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server, err := NewServer(config, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}

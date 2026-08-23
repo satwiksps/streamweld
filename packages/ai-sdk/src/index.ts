@@ -353,7 +353,6 @@ async function* adaptEvents(
 ): AsyncGenerator<UIMessageChunk, void> {
   let textStarted = false;
   let finishReason: UIMessageFinishReason | undefined;
-  let terminal = false;
 
   yield { type: "start", messageId: checkpoint.messageId };
 
@@ -372,7 +371,6 @@ async function* adaptEvents(
     }
 
     if (event.type === "done") {
-      terminal = true;
       onTerminal();
       if (textStarted) {
         yield { type: "text-end", id: checkpoint.textPartId };
@@ -386,7 +384,6 @@ async function* adaptEvents(
     }
 
     if (event.type === "stopped") {
-      terminal = true;
       onTerminal();
       yield {
         type: "data-streamweld",
@@ -401,7 +398,6 @@ async function* adaptEvents(
     }
 
     if (event.type === "error") {
-      terminal = true;
       onTerminal();
       yield {
         type: "data-streamweld",
@@ -422,11 +418,9 @@ async function* adaptEvents(
     }
   }
 
-  if (!terminal) {
-    throw new UnsupportedStreamPayloadError(
-      "Streamweld event stream ended without a terminal done, stopped, or error event",
-    );
-  }
+  throw new UnsupportedStreamPayloadError(
+    "Streamweld event stream ended without a terminal done, stopped, or error event",
+  );
 }
 
 function parseOpenAIChunk(value: unknown): ParsedChunk {

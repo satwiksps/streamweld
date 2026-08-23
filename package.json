@@ -8,6 +8,9 @@
   },
   "scripts": {
     "build": "pnpm --recursive --if-present run build",
+    "build:workspace-dependencies": "pnpm --filter @streamweld/client run build",
+    "pretest": "pnpm run build:workspace-dependencies",
+    "pretypecheck": "pnpm run build:workspace-dependencies",
     "test": "pnpm --recursive --if-present run test",
     "typecheck": "pnpm --recursive --if-present run typecheck"
   },

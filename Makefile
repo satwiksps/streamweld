@@ -46,7 +46,7 @@ lint-ts: ## Run the strict TypeScript static-analysis gate.
 	$(PNPM) run typecheck
 
 typecheck: ## Type-check every TypeScript workspace package.
-	$(PNPM) --recursive --if-present run typecheck
+	$(PNPM) run typecheck
 
 test: test-go test-ts ## Run the Phase 0 unit-test suites.
 
@@ -54,7 +54,7 @@ test-go: ## Run Go tests; set GO_TEST_FLAGS=-race in CI.
 	$(GO) test $(GO_TEST_FLAGS) ./...
 
 test-ts: ## Run TypeScript tests across the pnpm workspace.
-	$(PNPM) --recursive --if-present run test
+	$(PNPM) run test
 
 build: build-go build-ts ## Build all Go and TypeScript packages.
 

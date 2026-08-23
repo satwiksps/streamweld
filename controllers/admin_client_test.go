@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/conformance"
 	"k8s.io/apimachinery/pkg/types"
 )
 

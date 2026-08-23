@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/backend"
 )
 
 const defaultDrainTimeout = 10 * time.Second

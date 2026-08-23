@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/conformance"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 func TestFailoverHTTPExternalHealthFailureMigratesBoundStream(t *testing.T) {

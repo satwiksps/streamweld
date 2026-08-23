@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/streamweld/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/backend"
 )
 
 var errProxyShuttingDown = errors.New("proxy is shutting down")

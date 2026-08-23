@@ -13,8 +13,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/telemetry"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/telemetry"
 )
 
 const immediateFlushInterval = -1
@@ -59,14 +59,14 @@ func newReverseProxy(target *url.URL, transport http.RoundTripper, logger *slog.
 		if errors.Is(err, context.Canceled) || errors.Is(request.Context().Err(), context.Canceled) {
 			logger.DebugContext(request.Context(), "upstream request canceled",
 				"method", request.Method,
-				"path", request.URL.Path,
+				"path", safeLogString(request.URL.Path),
 			)
 			return
 		}
 		logger.ErrorContext(request.Context(), "upstream request failed",
 			"method", request.Method,
-			"path", request.URL.Path,
-			"error", err,
+			"path", safeLogString(request.URL.Path),
+			"error", safeLogError(err),
 		)
 		writeAPIError(writer, http.StatusBadGateway, "bad_gateway", "the upstream backend could not complete the request")
 	}
@@ -233,6 +233,6 @@ type slogWriter struct {
 }
 
 func (w *slogWriter) Write(data []byte) (int, error) {
-	w.logger.Error("reverse proxy transport error", "detail", strings.TrimSpace(string(data)))
+	w.logger.Error("reverse proxy transport error", "detail", safeLogString(strings.TrimSpace(string(data))))
 	return len(data), nil
 }

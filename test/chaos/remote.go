@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/migrate"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/migrate"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 // RemoteConfig runs the deterministic matrix against a provisioned proxy.

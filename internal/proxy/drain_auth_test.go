@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/conformance"
 )
 
 func TestBackendDrainRequiresConfiguredAdminBearer(t *testing.T) {

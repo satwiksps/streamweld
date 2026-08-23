@@ -52,4 +52,4 @@ an already-connected remote reader live through a Redis outage, but it cannot
 recover an uncommitted suffix after the owner process dies.
 
 The normative, implementation-level contract lives in the
-[protocol document](https://github.com/streamweld/streamweld/blob/main/docs/protocol.md).
+[protocol document](https://github.com/satwiksps/streamweld/blob/main/docs/protocol.md).

@@ -22,7 +22,7 @@ env:
   CI: true
   GOFLAGS: -mod=readonly
   GOTOOLCHAIN: local
-  RELEASE_GO_VERSION: 1.26.5
+  RELEASE_GO_VERSION: 1.26.6
 
 jobs:
   quality:
@@ -177,7 +177,7 @@ jobs:
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
-          images: ghcr.io/streamweld/${{ matrix.image }}
+          images: ghcr.io/satwiksps/${{ matrix.image }}
           flavor: latest=false
           tags: |
             type=raw,value=${{ needs.quality.outputs.version }}
@@ -186,14 +186,14 @@ jobs:
           labels: |
             org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.description=${{ matrix.description }}
-            org.opencontainers.image.source=https://github.com/streamweld/streamweld
+            org.opencontainers.image.source=https://github.com/satwiksps/streamweld
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.version=${{ needs.quality.outputs.version }}
             org.opencontainers.image.revision=${{ needs.quality.outputs.commit }}
             org.opencontainers.image.created=${{ needs.quality.outputs.commit_date }}
           annotations: |
             org.opencontainers.image.description=${{ matrix.description }}
-            org.opencontainers.image.source=https://github.com/streamweld/streamweld
+            org.opencontainers.image.source=https://github.com/satwiksps/streamweld
       - id: push
         uses: docker/build-push-action@v7.2.0
         with:
@@ -214,7 +214,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-${{ matrix.target }}
       - uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/streamweld/${{ matrix.image }}
+          subject-name: ghcr.io/satwiksps/${{ matrix.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
@@ -245,7 +245,7 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
       - name: Push chart
-        run: helm push "${RUNNER_TEMP}/helm/streamweld-${{ needs.quality.outputs.version }}.tgz" oci://ghcr.io/streamweld/charts
+        run: helm push "${RUNNER_TEMP}/helm/streamweld-${{ needs.quality.outputs.version }}.tgz" oci://ghcr.io/satwiksps/charts
 
   npm:
     name: npm packages with provenance

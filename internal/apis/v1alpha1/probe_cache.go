@@ -1,6 +1,6 @@
 package v1alpha1
 
-import "github.com/streamweld/streamweld/internal/conformance"
+import "github.com/satwiksps/streamweld/internal/conformance"
 
 // FindCachedBackendProbe returns the newest independent probe metadata whose
 // exact (imageDigest, spec.model, tokenizerHash) cache key belongs to the

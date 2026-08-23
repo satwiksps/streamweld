@@ -238,10 +238,10 @@
         "auth": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "password"],
+          "required": ["enabled"],
           "properties": {
             "enabled": {"type": "boolean"},
-            "password": {"type": "string", "pattern": "^[A-Za-z0-9._~-]*$", "maxLength": 256}
+            "password": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+$", "maxLength": 256}
           }
         },
         "resources": {"$ref": "#/definitions/resources"},

@@ -7,6 +7,7 @@ const monorepoRoot = path.resolve(docsSiteRoot, '..', '..');
 const sourceSnapshotRoot = path.join(docsSiteRoot, '.repository');
 const repositoryRoot = await containsSourceDocuments(monorepoRoot) ? monorepoRoot : sourceSnapshotRoot;
 const outputRoot = path.join(docsSiteRoot, 'src', 'content', 'docs', 'source');
+const repositoryURL = 'https://github.com/satwiksps/streamweld';
 
 const documents = [
 	['docs/protocol.md', 'protocol.md', 'Normative protocol'],
@@ -39,7 +40,8 @@ async function renderSourceDocument(source, destination, fallbackTitle) {
 	const heading = original.match(/^#\s+(.+)\n/);
 	const title = heading?.[1] ?? fallbackTitle;
 	const body = heading ? original.slice(heading[0].length) : original;
-	const editUrl = `https://github.com/streamweld/streamweld/edit/main/${source}`;
+	const linkedBody = rewriteRelativeRepositoryLinks(body, source);
+	const editUrl = `${repositoryURL}/edit/main/${source}`;
 	const generated = [
 		'---',
 		`title: ${JSON.stringify(title)}`,
@@ -48,12 +50,19 @@ async function renderSourceDocument(source, destination, fallbackTitle) {
 		'',
 		'> This page is generated at build time from the repository source linked above.',
 		'',
-		body.trimStart(),
+		linkedBody.trimStart(),
 	].join('\n');
 
 	const destinationPath = path.join(outputRoot, ...destination.split('/'));
 	await mkdir(path.dirname(destinationPath), { recursive: true });
 	await writeFile(destinationPath, generated, 'utf8');
+}
+
+function rewriteRelativeRepositoryLinks(markdown, source) {
+	const sourceURL = new URL(`${repositoryURL}/blob/main/${source}`);
+	return markdown.replace(/(\]\()(\.{1,2}\/[^)\s]+)(?=[\s)])/g, (_match, opening, target) => {
+		return `${opening}${new URL(target, sourceURL)}`;
+	});
 }
 
 async function containsSourceDocuments(candidate) {

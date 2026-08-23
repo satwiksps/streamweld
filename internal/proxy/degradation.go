@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 const (

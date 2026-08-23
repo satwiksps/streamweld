@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 func TestJournalDegradationMarkerRetriesUntilRecovery(t *testing.T) {

@@ -50,6 +50,6 @@ the checker against the immutable backend image digest, exact model, and
 tokenizer hash.
 
 The exhaustive source of chart defaults and validation is
-[`values.yaml`](https://github.com/streamweld/streamweld/blob/main/deploy/helm/streamweld/values.yaml)
+[`values.yaml`](https://github.com/satwiksps/streamweld/blob/main/deploy/helm/streamweld/values.yaml)
 plus
-[`values.schema.json`](https://github.com/streamweld/streamweld/blob/main/deploy/helm/streamweld/values.schema.json).
+[`values.schema.json`](https://github.com/satwiksps/streamweld/blob/main/deploy/helm/streamweld/values.schema.json).

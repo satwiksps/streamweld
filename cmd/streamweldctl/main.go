@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/conformance"
 )
 
 const (

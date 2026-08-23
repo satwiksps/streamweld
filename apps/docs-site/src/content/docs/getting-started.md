@@ -24,12 +24,12 @@ Clone the same release tag used by the chart. This supplies version-matched
 sample manifests rather than relying on files from an unrelated checkout:
 
 ```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/streamweld/streamweld.git
+git clone --depth 1 --branch v0.1.0 https://github.com/satwiksps/streamweld.git
 cd streamweld
 ```
 
 ```sh
-helm upgrade --install streamweld oci://ghcr.io/streamweld/charts/streamweld \
+helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
   --namespace streamweld-system \
   --create-namespace \
   --version 0.1.0 \

@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/telemetry"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/telemetry"
 	"go.opentelemetry.io/otel/propagation"
 )
 
@@ -570,9 +570,9 @@ func (h *Handler) serveJournalTail(
 			result, writeErr := sseWriter.WriteEntry(entry)
 			if writeErr != nil {
 				h.durable.logger.ErrorContext(request.Context(), "write journal SSE entry",
-					"stream_id", id,
+					"stream_id", safeLogString(id.String()),
 					"seq", entry.Seq,
-					"error", writeErr,
+					"error", safeLogError(writeErr),
 				)
 				return false
 			}
@@ -628,7 +628,7 @@ func (h *Handler) serveDegradedFeed(
 		}
 		if err != nil {
 			h.durable.logger.ErrorContext(request.Context(), "write degraded SSE frame",
-				"stream_id", id, "error", err)
+				"stream_id", safeLogString(id.String()), "error", safeLogError(err))
 			return false
 		}
 		if result.Visible {
@@ -649,7 +649,7 @@ func (h *Handler) flushStreamResponse(
 ) bool {
 	if err := writer.Flush(); err != nil {
 		h.durable.logger.DebugContext(request.Context(), "flush downstream stream",
-			"stream_id", id, "error", err)
+			"stream_id", safeLogString(id.String()), "error", safeLogError(err))
 		return false
 	}
 	return true
@@ -664,7 +664,8 @@ func (h *Handler) handleStreamState(writer http.ResponseWriter, request *http.Re
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(writer).Encode(publicStreamState(state)); err != nil {
-		h.durable.logger.WarnContext(request.Context(), "write stream state", "stream_id", id, "error", err)
+		h.durable.logger.WarnContext(request.Context(), "write stream state",
+			"stream_id", safeLogString(id.String()), "error", safeLogError(err))
 	}
 }
 
@@ -707,7 +708,7 @@ func (h *Handler) handleStreamStop(writer http.ResponseWriter, request *http.Req
 			result, decodeErr := stoppedResponseFromState(id, state)
 			if decodeErr != nil {
 				h.durable.logger.ErrorContext(request.Context(), "decode persisted stop result",
-					"stream_id", id, "error", decodeErr)
+					"stream_id", safeLogString(id.String()), "error", safeLogError(decodeErr))
 				writeStreamError(writer, http.StatusServiceUnavailable, "stop_result_unavailable", "persisted stop result is invalid", id.String())
 				return
 			}
@@ -747,7 +748,8 @@ func (h *Handler) writeStopResponse(
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(http.StatusAccepted)
 	if err := json.NewEncoder(writer).Encode(result); err != nil {
-		h.durable.logger.WarnContext(request.Context(), "write stop response", "stream_id", result.StreamID, "error", err)
+		h.durable.logger.WarnContext(request.Context(), "write stop response",
+			"stream_id", safeLogString(result.StreamID.String()), "error", safeLogError(err))
 	}
 }
 

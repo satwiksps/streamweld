@@ -1,0 +1,15 @@
+---
+const { head } = Astro.locals.starlightRoute;
+const isNotFoundPage = /\/404\/?$/.test(Astro.url.pathname);
+const pageHead = isNotFoundPage
+	? head.filter(({ tag, attrs }) => {
+			return !(
+				(tag === 'link' && attrs?.rel === 'canonical') ||
+				(tag === 'meta' && attrs?.property === 'og:url')
+			);
+		})
+	: head;
+---
+
+{pageHead.map(({ tag: Tag, attrs, content }) => <Tag {...attrs} set:html={content} />)}
+{isNotFoundPage && <meta name="robots" content="noindex, follow" />}

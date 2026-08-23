@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/streamweld/streamweld/controllers"
-	"github.com/streamweld/streamweld/internal/apis/v1alpha1"
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/controllers"
+	"github.com/satwiksps/streamweld/internal/apis/v1alpha1"
+	"github.com/satwiksps/streamweld/internal/conformance"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"

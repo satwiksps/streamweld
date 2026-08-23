@@ -39,7 +39,7 @@ The chart fails rendering instead of accepting these unsafe layouts:
 
 Enable Redis before horizontal proxy scaling. Keep operator leader election on
 for high availability. See the
-[sample manifests](https://github.com/streamweld/streamweld/tree/main/deploy/samples)
+[sample manifests](https://github.com/satwiksps/streamweld/tree/main/deploy/samples)
 for a deterministic CPU-only route.
 
 ## Verify a rollout

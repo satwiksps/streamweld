@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/conformance"
 )
 
 func TestDoctorCommandHumanReport(t *testing.T) {

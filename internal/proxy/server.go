@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -16,10 +15,10 @@ import (
 	"time"
 
 	redislib "github.com/redis/go-redis/v9"
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/conformance"
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/telemetry"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/telemetry"
 )
 
 // Option customizes a Server without expanding its core configuration surface.
@@ -152,7 +151,7 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		return nil, fmt.Errorf("parse backend URL: %w", err)
 	}
 	if logger == nil {
-		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 	}
 
 	settings := serverOptions{}

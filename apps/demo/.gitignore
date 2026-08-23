@@ -1,6 +1,7 @@
 dist/
 node_modules/
 .wrangler/
+.vercel/
 .dev.vars*
 .env*
 !.env.example

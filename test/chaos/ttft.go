@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/proxy"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/proxy"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 const (

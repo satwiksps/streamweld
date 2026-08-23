@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 func TestPassthroughTTFTOverheadBudget(t *testing.T) {
@@ -52,7 +52,7 @@ func TestPassthroughTTFTOverheadBudget(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BackendURL = backend.URL
 	cfg.ListenAddress = "127.0.0.1:0"
-	server, err := NewServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server, err := NewServer(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewServer(): %v", err)
 	}
@@ -168,7 +168,7 @@ func TestNonStreamingPassthroughLatencyOverheadBudget(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BackendURL = backend.URL
 	cfg.ListenAddress = "127.0.0.1:0"
-	server, err := NewServer(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server, err := NewServer(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewServer(): %v", err)
 	}

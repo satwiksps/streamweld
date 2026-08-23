@@ -8,6 +8,7 @@ type FailureScenario =
   | "explicit-stop";
 
 type SessionMode = "durable" | "direct";
+type StorageKind = "shared" | "ephemeral";
 
 interface Env {
   readonly DB?: D1Database;
@@ -108,6 +109,8 @@ interface ReplayRow {
 
 const encoder = new TextEncoder();
 const ulidAlphabet = "0123456789abcdefghjkmnpqrstvwxyz";
+const demoModel = "llama-3.1-8b";
+const maxDemoRequestBytes = 16 * 1024;
 const initializedDatabases = new WeakMap<object, Promise<void>>();
 const failureScenarios = new Set<FailureScenario>([
   "pod-kill",
@@ -130,19 +133,29 @@ const answerChunks = Array.from(
   (_, index) => answerWords.slice(index * 3, index * 3 + 3).join(""),
 );
 
-const worker: ExportedHandler<Env> = createWorker((env) => {
-  if (env.DB === undefined) throw new Error("D1 binding DB is unavailable");
-  return new D1DemoStore(env.DB);
-});
+const worker: ExportedHandler<Env> = createWorker(
+  (env) => {
+    if (env.DB === undefined) throw new Error("D1 binding DB is unavailable");
+    return new D1DemoStore(env.DB);
+  },
+  "shared",
+);
 
 export default worker;
 
 export function createTestWorker(): DemoHandler {
-  const store = new MemoryDemoStore();
-  return createWorker(() => store);
+  return createEphemeralWorker();
 }
 
-function createWorker(resolveStore: (env: Env) => DemoStore): DemoHandler {
+export function createEphemeralWorker(): DemoHandler {
+  const store = new MemoryDemoStore();
+  return createWorker(() => store, "ephemeral");
+}
+
+function createWorker(
+  resolveStore: (env: Env) => DemoStore,
+  storage: StorageKind,
+): DemoHandler {
   return {
     async fetch(request, env, context) {
       let store: DemoStore;
@@ -160,7 +173,7 @@ function createWorker(resolveStore: (env: Env) => DemoStore): DemoHandler {
           503,
         );
       }
-      return route(request, context, store);
+      return route(request, context, store, storage);
     },
   };
 }
@@ -169,6 +182,7 @@ async function route(
   request: Request,
   context: ExecutionContext,
   store: DemoStore,
+  storage: StorageKind,
 ): Promise<Response> {
   const url = new URL(request.url);
 
@@ -176,7 +190,7 @@ async function route(
   if (request.method === "GET" && url.pathname === "/api/demo/health") {
     return jsonResponse({
       status: "ready",
-      storage: "shared",
+      storage,
       backends: [
         { id: "backend-a", version: "v1", state: "healthy" },
         { id: "backend-b", version: "v1", state: "healthy" },
@@ -190,7 +204,9 @@ async function route(
   }
 
   if (request.method === "POST" && url.pathname === "/api/demo/direct") {
-    const session = await createSession(await readModel(request), "direct", store);
+    const model = await readModel(request);
+    if (model instanceof Response) return model;
+    const session = await createSession(model, "direct", store);
     const liveStore = new LiveDemoStore(store);
     const response = liveStore.response({ "X-Demo-Stream-Id": session.id });
     context.waitUntil(produce(session, liveStore));
@@ -198,7 +214,9 @@ async function route(
   }
 
   if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
-    const session = await createSession(await readModel(request), "durable", store);
+    const model = await readModel(request);
+    if (model instanceof Response) return model;
+    const session = await createSession(model, "durable", store);
     const liveStore = new LiveDemoStore(store);
     const response = liveStore.response({
       "X-Streamweld-Stream-Id": session.id,
@@ -514,12 +532,9 @@ function streamResponse(
 }
 
 async function injectFailure(request: Request, store: DemoStore): Promise<Response> {
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
-    return jsonResponse({ error: { code: "invalid_json" } }, 400);
-  }
+  const parsed = await readJSONBody(request);
+  if (!parsed.ok) return parsed.response;
+  const payload = parsed.value;
   if (!isRecord(payload)) return jsonResponse({ error: { code: "invalid_request" } }, 400);
   const id = payload["stream_id"];
   const scenario = payload["scenario"];
@@ -875,16 +890,56 @@ class MemoryDemoStore implements DemoStore {
   }
 }
 
-async function readModel(request: Request): Promise<string> {
-  try {
-    const body = await request.json();
-    if (isRecord(body) && typeof body["model"] === "string" && body["model"].length > 0) {
-      return body["model"];
-    }
-  } catch {
-    // The demo deliberately falls back to its visible default model.
+async function readModel(request: Request): Promise<string | Response> {
+  const parsed = await readJSONBody(request);
+  if (!parsed.ok) return parsed.response;
+  if (!isRecord(parsed.value)) {
+    return jsonResponse({ error: { code: "invalid_request", message: "request body must be an object" } }, 400);
   }
-  return "llama-3.1-8b";
+
+  const model = parsed.value["model"];
+  if (model === undefined) return demoModel;
+  if (model !== demoModel) {
+    return jsonResponse(
+      { error: { code: "unsupported_model", message: `the public demo only supports ${demoModel}` } },
+      400,
+    );
+  }
+  return demoModel;
+}
+
+type JSONBodyResult =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly response: Response };
+
+async function readJSONBody(request: Request): Promise<JSONBodyResult> {
+  const contentLength = request.headers.get("Content-Length");
+  if (contentLength !== null && Number(contentLength) > maxDemoRequestBytes) {
+    return {
+      ok: false,
+      response: jsonResponse({ error: { code: "request_too_large" } }, 413),
+    };
+  }
+
+  let text: string;
+  try {
+    text = await request.text();
+  } catch {
+    return { ok: false, response: jsonResponse({ error: { code: "invalid_body" } }, 400) };
+  }
+  if (encoder.encode(text).byteLength > maxDemoRequestBytes) {
+    return {
+      ok: false,
+      response: jsonResponse({ error: { code: "request_too_large" } }, 413),
+    };
+  }
+  if (text.trim() === "") return { ok: true, value: {} };
+
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false, response: jsonResponse({ error: { code: "invalid_json" } }, 400) };
+  }
 }
 
 function parseCursor(value: string | null): number | null {
@@ -974,7 +1029,6 @@ function emptyResponse(status: number): Response {
 
 function corsHeaders(source: Record<string, string> = {}): Headers {
   const headers = new Headers(source);
-  headers.set("Access-Control-Allow-Origin", "*");
   headers.set("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID, X-Streamweld-Idempotency-Key, X-Streamweld-Verbose");
   headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   headers.set("Access-Control-Expose-Headers", "X-Streamweld-Stream-Id, X-Streamweld-Durability, X-Demo-Stream-Id");

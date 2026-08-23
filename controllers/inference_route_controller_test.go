@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/apis/v1alpha1"
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/apis/v1alpha1"
+	"github.com/satwiksps/streamweld/internal/conformance"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/meta"

@@ -21,6 +21,6 @@ go run ./cmd/streamweldctl bench --verify
 ```
 
 Review the exact machine-readable
-[`results.json`](https://github.com/streamweld/streamweld/blob/main/benchmarks/results.json)
+[`results.json`](https://github.com/satwiksps/streamweld/blob/main/benchmarks/results.json)
 before comparing runs. Correctness—not a portable wall-clock number—is the
 regression gate.

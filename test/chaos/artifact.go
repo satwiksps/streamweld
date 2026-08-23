@@ -18,7 +18,7 @@ const (
 	readmeEnd              = "<!-- streamweld:benchmarks:end -->"
 	operationsRolloutStart = "<!-- streamweld:rollout-impact:start -->"
 	operationsRolloutEnd   = "<!-- streamweld:rollout-impact:end -->"
-	liveDemoURL            = "https://streamweld-failure-lab.satwiksub.chatgpt.site"
+	failureLabSourcePath   = "apps/demo/README.md"
 )
 
 // WriteArtifacts validates and writes both committed benchmark formats from
@@ -116,8 +116,8 @@ func RenderREADMEBenchmarkSection(report Report) []byte {
 	var output strings.Builder
 	output.WriteString(readmeStart)
 	output.WriteString("\n## Local chaos model (simulation) results\n\n")
-	output.WriteString("[Open the live failure lab](")
-	output.WriteString(liveDemoURL)
+	output.WriteString("[Run the failure lab locally](")
+	output.WriteString(failureLabSourcePath)
 	output.WriteString(") to compare the durable and direct paths side by side.\n\n")
 	output.WriteString("This table is generated from [`benchmarks/results.json`](benchmarks/results.json) by `make bench`; edits inside these markers are rejected by `make bench-check`. It reports an in-process model/simulation—not Kubernetes process disruption. The non-skippable nightly [`kind` matrix](.github/workflows/nightly.yml) is the physical failure-injection gate. The committed run is the honestly labelled `")
 	output.WriteString(markdownCell(report.Profile.Name))

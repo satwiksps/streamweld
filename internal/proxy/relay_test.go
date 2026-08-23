@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 type relayDirectoryStub struct {
@@ -53,7 +53,7 @@ func TestRemoteRelayForwardsOnlyProtocolFieldsAndAllowlistedResponseHeaders(t *t
 		insecure:  true,
 		directory: relayDirectoryStub{owner: journal.OwnerRecord{ReplicaID: "replica-a", RelayURL: ownerServer.URL}},
 		client:    ownerServer.Client(),
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:    slog.New(slog.DiscardHandler),
 	}
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/streams/"+id.String()+"/events", nil)
 	request.Header.Set("Authorization", "Bearer public-secret")
@@ -98,7 +98,7 @@ func TestRemoteRelayFallsBackBeforeHeadersForUnknownStaleSelfOrUnavailableOwner(
 		t.Run(test.name, func(t *testing.T) {
 			coordinator := &relayCoordinator{
 				replicaID: "replica-b", enabled: true, directory: test.directory,
-				client: http.DefaultClient, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				client: http.DefaultClient, logger: slog.New(slog.DiscardHandler),
 			}
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
@@ -133,7 +133,7 @@ func TestRemoteRelayRejectsDirectoryDowngradeAndSSRFBeforeDial(t *testing.T) {
 					dialed.Store(true)
 					return nil, errors.New("unexpected dial")
 				})},
-				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				logger: slog.New(slog.DiscardHandler),
 			}
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
@@ -165,7 +165,7 @@ func TestRemoteRelayPrivateFailureStatusesFallBackBeforeHeaders(t *testing.T) {
 			coordinator := &relayCoordinator{
 				replicaID: "replica-b", enabled: true, insecure: true,
 				directory: relayDirectoryStub{owner: journal.OwnerRecord{ReplicaID: "replica-a", RelayURL: ownerServer.URL}},
-				client:    ownerServer.Client(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				client:    ownerServer.Client(), logger: slog.New(slog.DiscardHandler),
 			}
 			recorder := httptest.NewRecorder()
 			if coordinator.tryServeRemoteEvents(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil), id, 0, false) {
@@ -337,7 +337,7 @@ func TestRemoteStopRelayForwardsNoPublicCredentialsAndAllowlistedJSON(t *testing
 	coordinator := &relayCoordinator{
 		replicaID: "replica-b", enabled: true, insecure: true,
 		directory: relayDirectoryStub{owner: journal.OwnerRecord{ReplicaID: "replica-a", RelayURL: ownerServer.URL}},
-		client:    ownerServer.Client(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		client:    ownerServer.Client(), logger: slog.New(slog.DiscardHandler),
 	}
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/public/stop", strings.NewReader("public-secret-body"))
 	request.Header.Set("Authorization", "Bearer public-secret")
@@ -488,7 +488,7 @@ func TestRelayShutdownJoinsHeartbeatAndIsIdempotent(t *testing.T) {
 			RelayURL:  "http://127.0.0.1:18081",
 		},
 		directory: directory,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:    slog.New(slog.DiscardHandler),
 		server:    &http.Server{Handler: http.NotFoundHandler()},
 		listen:    "127.0.0.1:0",
 		heartbeat: 100 * time.Millisecond,
@@ -598,7 +598,7 @@ func newRelayResponseTestCoordinator(
 				return http.ErrUseLastResponse
 			},
 		},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger: slog.New(slog.DiscardHandler),
 	}
 }
 

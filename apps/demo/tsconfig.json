@@ -4,5 +4,5 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "@cloudflare/workers-types"]
   },
-  "include": ["db/**/*.ts", "src/**/*.ts", "src/**/*.tsx", "worker/**/*.ts", "vite.config.ts", "vitest.config.ts"]
+  "include": ["api/**/*.ts", "db/**/*.ts", "src/**/*.ts", "src/**/*.tsx", "worker/**/*.ts", "vite.config.ts", "vitest.config.ts"]
 }

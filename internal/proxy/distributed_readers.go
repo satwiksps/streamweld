@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 const (
@@ -49,7 +49,9 @@ func (s *durableService) acquireDistributedReader(
 				cancel()
 				if refreshErr != nil {
 					s.logger.Warn("refresh distributed reader lease",
-						"stream_id", id, "reader_id", readerID, "error", refreshErr)
+						"stream_id", safeLogString(id.String()),
+						"reader_id", safeLogString(readerID.String()),
+						"error", safeLogError(refreshErr))
 					continue
 				}
 				if !refreshed {
@@ -58,7 +60,9 @@ func (s *durableService) acquireDistributedReader(
 					acquireCancel()
 					if acquireErr != nil {
 						s.logger.Warn("reacquire distributed reader lease",
-							"stream_id", id, "reader_id", readerID, "error", acquireErr)
+							"stream_id", safeLogString(id.String()),
+							"reader_id", safeLogString(readerID.String()),
+							"error", safeLogError(acquireErr))
 					}
 				}
 			case <-heartbeatContext.Done():
@@ -76,7 +80,9 @@ func (s *durableService) acquireDistributedReader(
 			defer cancel()
 			if err := leases.ReleaseReader(releaseContext, id, readerID.String()); err != nil {
 				s.logger.Warn("release distributed reader lease",
-					"stream_id", id, "reader_id", readerID, "error", err)
+					"stream_id", safeLogString(id.String()),
+					"reader_id", safeLogString(readerID.String()),
+					"error", safeLogError(err))
 			}
 		})
 	}

@@ -2,21 +2,30 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-const onGitHubPages = process.env.GITHUB_ACTIONS === 'true';
-const site = process.env.STREAMWELD_DOCS_SITE ?? (onGitHubPages ? 'https://streamweld.github.io' : 'http://localhost:4321');
-const base = process.env.STREAMWELD_DOCS_BASE ?? (onGitHubPages ? '/streamweld' : '/');
+const readTheDocsCanonical = process.env.READTHEDOCS_CANONICAL_URL;
+const readTheDocsURL = readTheDocsCanonical === undefined ? undefined : new URL(readTheDocsCanonical);
+const isReadTheDocs = process.env.READTHEDOCS === 'True';
+const readTheDocsBase = isReadTheDocs
+	? `/${process.env.READTHEDOCS_LANGUAGE ?? 'en'}/${process.env.READTHEDOCS_VERSION ?? 'latest'}`
+	: readTheDocsURL?.pathname;
+const site = process.env.STREAMWELD_DOCS_SITE ?? readTheDocsURL?.origin ?? 'http://localhost:4321';
+const requestedBase = process.env.STREAMWELD_DOCS_BASE ?? readTheDocsBase ?? '/';
+const trimmedBase = requestedBase.replace(/^\/+|\/+$/g, '');
+const base = trimmedBase === '' ? '/' : `/${trimmedBase}`;
 const socialImage = new URL(`${base === '/' ? '' : base}/og.png`, site).toString();
 
 // https://astro.build/config
 export default defineConfig({
 	site,
 	base,
+	trailingSlash: 'always',
 	outDir: './astro-dist',
 	integrations: [
 		starlight({
 			title: 'Streamweld',
 			description: 'Durable token streams for self-hosted LLM inference.',
 			favicon: '/og.png',
+			components: { Head: './src/components/Head.astro' },
 			customCss: ['./src/styles/custom.css'],
 			lastUpdated: true,
 			head: [
@@ -25,7 +34,7 @@ export default defineConfig({
 				{ tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
 				{ tag: 'meta', attrs: { name: 'theme-color', content: '#0b1319' } },
 			],
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/streamweld/streamweld' }],
+			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/satwiksps/streamweld' }],
 			sidebar: [
 				{
 					label: 'Start here',

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/migrate"
+	"github.com/satwiksps/streamweld/internal/migrate"
 )
 
 // LocalConfig controls the deterministic, Kubernetes-free benchmark profile.

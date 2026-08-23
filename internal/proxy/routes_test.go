@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/conformance"
 )
 
 func TestRouteBackendRegistryFencesGenerationUIDAndDeletion(t *testing.T) {

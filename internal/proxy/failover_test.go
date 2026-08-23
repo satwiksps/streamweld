@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/conformance"
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 const failoverHTTPTestTimeout = 5 * time.Second

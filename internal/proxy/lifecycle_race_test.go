@@ -3,15 +3,14 @@ package proxy
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 func TestActiveJournalLeaseRefreshesAndStopsWithRuntime(t *testing.T) {
@@ -24,7 +23,7 @@ func TestActiveJournalLeaseRefreshesAndStopsWithRuntime(t *testing.T) {
 			JournalTTL:       40 * time.Millisecond,
 			ReadinessTimeout: 10 * time.Millisecond,
 		},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger: slog.New(slog.DiscardHandler),
 	}
 	id, err := journal.NewStreamID()
 	if err != nil {
@@ -89,7 +88,7 @@ func TestLocalResumeAttachesBeforeBlockingJournalLookup(t *testing.T) {
 			ReaderMaxLagBytes: 1 << 10,
 		},
 		journal: blocking,
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:  slog.New(slog.DiscardHandler),
 	}
 	runtimeContext, cancelRuntime := context.WithCancelCause(rootContext)
 	runtime := &streamRuntime{
@@ -177,7 +176,7 @@ func TestTerminalWaitsForCommittedAppendResultAndMirrorsExactSequence(t *testing
 			ReaderMaxLagBytes: 1 << 10,
 		},
 		journal: gated,
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:  slog.New(slog.DiscardHandler),
 	}
 	runtimeContext, cancelRuntime := context.WithCancelCause(rootContext)
 	runtime := &streamRuntime{
@@ -297,7 +296,7 @@ func TestCommittedAppendResultOutlivesProducerContextCancellation(t *testing.T) 
 			ReaderMaxLagBytes: 1 << 10,
 		},
 		journal: gated,
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:  slog.New(slog.DiscardHandler),
 	}
 	runtimeContext, cancelRuntime := context.WithCancelCause(rootContext)
 	runtime := &streamRuntime{

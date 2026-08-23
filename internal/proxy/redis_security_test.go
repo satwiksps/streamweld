@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -51,7 +50,7 @@ func TestRedisConfigurationErrorsRedactCredentials(t *testing.T) {
 	invalidOptions.BackendURL = "http://backend.example.test"
 	invalidOptions.JournalBackend = JournalBackendRedis
 	invalidOptions.RedisURL = "redis://user:" + secret + "@redis.example.test/not-a-database"
-	_, err = NewServer(invalidOptions, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err = NewServer(invalidOptions, slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("NewServer() accepted Redis URL with invalid database")
 	}

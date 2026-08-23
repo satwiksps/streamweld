@@ -1,10 +1,31 @@
 # Streamweld
 
+[![CI](https://github.com/satwiksps/streamweld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/ci.yml)
+[![Documentation](https://github.com/satwiksps/streamweld/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/docs.yml)
+[![Security](https://github.com/satwiksps/streamweld/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/security.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](package.json)
+
 > Your token stream shouldn't die because a pod got evicted or a phone switched to cellular.
 
 Streamweld is a durable stream layer for self-hosted LLM inference: one OpenAI-compatible stream identity and append-only journal that can outlive both its reader connection and its current backend attempt.
 
-[▶ Play the 20-second terminal cast](docs/assets/streamweld-demo.cast) · [Open the live failure lab](https://streamweld-failure-lab.satwiksub.chatgpt.site) · [Read the documentation](https://streamweld-docs.satwiksub.chatgpt.site)
+[Documentation](apps/docs-site/src/content/docs/index.mdx) ·
+[Quickstart](#quickstart) ·
+[Architecture](#architecture) ·
+[Protocol](docs/protocol.md) ·
+[Discussions](https://github.com/satwiksps/streamweld/discussions) ·
+[Contributing](CONTRIBUTING.md)
+
+> [!IMPORTANT]
+> **Project status: pre-release.** The source, tests, documentation, and
+> deterministic failure lab are public. Versioned binaries, container images,
+> the Helm OCI chart, and npm packages have not been published yet. Public APIs
+> and the `v1alpha1` Kubernetes resources may change before the first stable
+> release.
+
+[▶ Play the 20-second terminal cast](docs/assets/streamweld-demo.cast) · [Run the failure lab locally](apps/demo/README.md)
 
 ```sh
 asciinema play docs/assets/streamweld-demo.cast
@@ -52,25 +73,44 @@ continuation proof does not hold.
 
 ## Quickstart
 
-> **Pre-release status:** the canonical GitHub repository, GHCR images/chart,
-> and npm packages are not public at this source revision. The pinned `v0.1.0`
-> flow below is the release acceptance path; it becomes runnable only after
-> those artifacts are published. Contributors with Docker can run `make e2e`
-> against a local kind cluster in the meantime.
+The source tree is runnable today. Clone it and execute the deterministic unit
+and workspace suites:
+
+```sh
+git clone https://github.com/satwiksps/streamweld.git
+cd streamweld
+make bootstrap
+make test
+```
+
+With Docker, kind, `kubectl`, and Helm installed, `make e2e` builds local images,
+installs the chart into a disposable cluster, and exercises the durable stream
+path without a GPU:
+
+```sh
+make e2e
+```
+
+### Release installation
+
+> [!NOTE]
+> The pinned `v0.1.0` flow below is the release acceptance path. It becomes
+> runnable after that tag and its GHCR artifacts are published; it is included
+> now so the intended installation contract remains reviewable.
 
 Prerequisites: Kubernetes 1.27 or newer, Helm 3.14 or newer, `kubectl`, and
 Git. Clone the same release tag used by the chart so the sample manifests and
 the installed binaries cannot drift:
 
 ```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/streamweld/streamweld.git
+git clone --depth 1 --branch v0.1.0 https://github.com/satwiksps/streamweld.git
 cd streamweld
 ```
 
 Install the tagged OCI chart:
 
 ```sh
-helm upgrade --install streamweld oci://ghcr.io/streamweld/charts/streamweld \
+helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
   --namespace streamweld-system \
   --create-namespace \
   --version 0.1.0 \
@@ -121,7 +161,7 @@ kubectl -n streamweld-system delete pod "$ORIGIN_POD" --wait=false
 The same `curl` remains attached while the proxy records a migration and
 continues on the other compatible backend. The fixture is for protocol and
 rollout validation, not a production-model compatibility or performance claim.
-See the [ten-minute guide](https://streamweld-docs.satwiksub.chatgpt.site/getting-started/)
+See the [ten-minute guide](apps/docs-site/src/content/docs/getting-started.md)
 for teardown and the release/source distinction.
 
 Tear down every resource created by the walkthrough with one command:
@@ -133,7 +173,7 @@ kubectl delete namespace streamweld-system
 <!-- streamweld:benchmarks:start -->
 ## Local chaos model (simulation) results
 
-[Open the live failure lab](https://streamweld-failure-lab.satwiksub.chatgpt.site) to compare the durable and direct paths side by side.
+[Run the failure lab locally](apps/demo/README.md) to compare the durable and direct paths side by side.
 
 This table is generated from [`benchmarks/results.json`](benchmarks/results.json) by `make bench`; edits inside these markers are rejected by `make bench-check`. It reports an in-process model/simulation—not Kubernetes process disruption. The non-skippable nightly [`kind` matrix](.github/workflows/nightly.yml) is the physical failure-injection gate. The committed run is the honestly labelled `deterministic-local` profile, not a kind or GPU claim.
 
@@ -186,7 +226,7 @@ These are protocol fixtures, not claims about real production models. No
 production row is published because no exact production image/model/tokenizer
 tuple was probed during this build. Add one only from a captured doctor report;
 strict policy refuses `UNSAFE` targets. See the
-[compatibility methodology](https://streamweld-docs.satwiksub.chatgpt.site/reference/compatibility/).
+[compatibility methodology](apps/docs-site/src/content/docs/reference/compatibility.md).
 
 ## Architecture
 
@@ -251,7 +291,7 @@ is in [`docs/client.md`](docs/client.md).
 
 The chart schema rejects unsafe layouts: memory journals cannot scale beyond one
 proxy, Redis mode needs a URL source, and the production owner relay needs mutual
-TLS. See the [full configuration reference](https://streamweld-docs.satwiksub.chatgpt.site/reference/configuration/)
+TLS. See the [full configuration reference](apps/docs-site/src/content/docs/reference/configuration.md)
 and [`deploy/helm/streamweld/values.yaml`](deploy/helm/streamweld/values.yaml).
 
 The Terraform demo creates a small CPU system pool plus on-demand and real Spot
@@ -281,6 +321,15 @@ outside that destroy boundary.
 - **Not durably multi-replica without external state.** Memory mode is
   single-process; Redis loss is surfaced as explicit, non-resumable degradation.
 
-Apache-2.0 licensed. See [`CONTRIBUTING.md`](CONTRIBUTING.md),
-[`SECURITY.md`](SECURITY.md), and the scoped
+## Community
+
+Use [GitHub Discussions](https://github.com/satwiksps/streamweld/discussions)
+for questions, deployment ideas, and design conversations. Reproducible bugs
+and focused feature proposals belong in the
+[issue tracker](https://github.com/satwiksps/streamweld/issues/new/choose).
+Before participating, read the [support guide](SUPPORT.md),
+[contribution guide](CONTRIBUTING.md), and [Code of Conduct](CODE_OF_CONDUCT.md).
+Security reports must follow the private process in [SECURITY.md](SECURITY.md).
+
+Apache-2.0 licensed. Starter-sized contributions are listed in the scoped
 [`good-first-issue` candidates](docs/good-first-issues.md).

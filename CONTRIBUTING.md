@@ -5,6 +5,12 @@ spans a Go proxy and Kubernetes operator, TypeScript clients, a Helm chart,
 Terraform, and deterministic failure-injection tests. Small, focused changes
 are easier to review and safer to release than broad rewrites.
 
+Participation in the project is governed by the
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). General usage and deployment
+questions belong in [GitHub Discussions](https://github.com/satwiksps/streamweld/discussions);
+the issue tracker is reserved for actionable defects and proposals. See
+[`SUPPORT.md`](SUPPORT.md) for the complete routing guide.
+
 ## Before you start
 
 - Search existing issues and pull requests before opening a duplicate.
@@ -23,7 +29,7 @@ are easier to review and safer to release than broad rewrites.
 
 The supported development toolchain is:
 
-- Go 1.23 or newer;
+- Go 1.25 or newer (the repository selects the patched Go 1.26.6 toolchain);
 - Node.js 20 or newer;
 - pnpm 11 (the exact package-manager version is declared in `package.json`);
 - GNU Make 4 or newer;

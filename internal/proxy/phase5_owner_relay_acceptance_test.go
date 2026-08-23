@@ -16,8 +16,8 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 func TestPhase5OwnerRelayRoutesCrossReplicaStop(t *testing.T) {
@@ -258,7 +258,7 @@ func startRelayAcceptanceReplica(
 
 	server, err := NewServer(
 		config,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		slog.New(slog.DiscardHandler),
 		WithStreamIDGenerator(&durableSequentialIDs{}),
 	)
 	if err != nil {

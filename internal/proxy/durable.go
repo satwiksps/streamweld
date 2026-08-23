@@ -15,11 +15,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/migrate"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
-	"github.com/streamweld/streamweld/internal/telemetry"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/migrate"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/telemetry"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )

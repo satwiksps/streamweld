@@ -1,7 +1,7 @@
 name: Documentation issue
 description: Report missing, inaccurate, or confusing documentation.
 title: "[Docs]: "
-labels: []
+labels: ["documentation", "triage"]
 body:
   - type: dropdown
     id: area

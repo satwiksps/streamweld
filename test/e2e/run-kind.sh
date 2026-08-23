@@ -27,7 +27,33 @@ else
 fi
 
 port_forward_pid=""
+dump_diagnostics() {
+  if ! kubectl cluster-info >/dev/null 2>&1; then
+    return
+  fi
+
+  echo "::group::Streamweld kind diagnostics" >&2
+  kubectl get deployments,pods,services --namespace streamweld-system -o wide >&2 || true
+  kubectl describe deployment/streamweld-proxy --namespace streamweld-system >&2 || true
+  kubectl describe pods --namespace streamweld-system >&2 || true
+  kubectl get events --namespace streamweld-system --sort-by=.lastTimestamp >&2 || true
+
+  while IFS= read -r pod; do
+    [[ -n "$pod" ]] || continue
+    echo "--- logs: $pod ---" >&2
+    kubectl logs "$pod" --namespace streamweld-system --all-containers --tail=-1 >&2 || true
+    echo "--- previous logs: $pod ---" >&2
+    kubectl logs "$pod" --namespace streamweld-system --all-containers --previous --tail=-1 >&2 || true
+  done < <(kubectl get pods --namespace streamweld-system -o name 2>/dev/null || true)
+  echo "::endgroup::" >&2
+}
+
 cleanup() {
+  status=$?
+  trap - EXIT
+  if (( status != 0 )); then
+    dump_diagnostics
+  fi
   if [[ -n "$port_forward_pid" ]]; then
     kill "$port_forward_pid" >/dev/null 2>&1 || true
     wait "$port_forward_pid" >/dev/null 2>&1 || true
@@ -35,6 +61,7 @@ cleanup() {
   if [[ "$created_cluster" == true && "${STREAMWELD_E2E_KEEP_CLUSTER:-false}" != true ]]; then
     kind delete cluster --name "$cluster_name"
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 

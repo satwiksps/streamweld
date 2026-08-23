@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDurableStream, LocalAbortError, type StreamEvent } from "@streamweld/client";
+import vercelFunction from "../api/streamweld.js";
 import { createTestWorker } from "./index.js";
 
 interface TestContext {
@@ -17,6 +18,8 @@ describe("demo worker", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("serves a complete Streamweld protocol stream", async () => {
@@ -41,6 +44,130 @@ describe("demo worker", () => {
     expect(body).toContain("Durable ");
     expect(body).not.toContain("data: [DONE]");
     await Promise.all(harness.pending);
+  });
+
+  it("adapts Vercel rewrites without claiming durable storage", async () => {
+    const response = await vercelFunction.fetch(new Request(
+      "https://demo.test/api/streamweld?__streamweld_path=/api/demo/health",
+    ));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "ready", storage: "ephemeral" });
+  });
+
+  it("streams and injects a failure through the Vercel adapter", async () => {
+    const harness = testContext();
+    const response = await vercelFunction.fetch(
+      new Request(
+        "https://demo.test/api/streamweld?__streamweld_path=/v1/chat/completions",
+        { method: "POST", body: JSON.stringify({ model: "llama-3.1-8b" }) },
+      ),
+      harness.context,
+    );
+    const id = response.headers.get("X-Streamweld-Stream-Id");
+    expect(id).not.toBeNull();
+
+    const injection = await vercelFunction.fetch(
+      new Request(
+        "https://demo.test/api/streamweld?__streamweld_path=/api/demo/inject",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stream_id: id, scenario: "pod-kill" }),
+        },
+      ),
+      harness.context,
+    );
+    expect(injection.status).toBe(200);
+
+    const bodyPromise = response.text();
+    await vi.runAllTimersAsync();
+    expect(await bodyPromise).toContain("event: streamweld.stream.migration");
+    await Promise.all(harness.pending);
+  });
+
+  it("proxies Vercel API calls to a configured shared Worker backend", async () => {
+    const upstreamFetch = vi.fn(async (request: Request) => Response.json({
+      url: request.url,
+      headers: Object.fromEntries(request.headers.entries()),
+    }));
+    vi.stubEnv("STREAMWELD_DEMO_UPSTREAM_ORIGIN", "https://worker.demo.test");
+    vi.stubGlobal("fetch", upstreamFetch);
+
+    const response = await vercelFunction.fetch(new Request(
+      "https://demo.test/api/streamweld?__streamweld_path=/api/demo/health",
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer must-not-leak",
+          Cookie: "session=must-not-leak",
+          "X-Streamweld-Verbose": "1",
+          "X-Vercel-Forwarded-For": "must-not-leak",
+        },
+      },
+    ));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      url: "https://worker.demo.test/api/demo/health",
+      headers: {
+        accept: "application/json",
+        "x-streamweld-verbose": "1",
+      },
+    });
+    expect(upstreamFetch).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a normalized path that escapes the public API prefixes", async () => {
+    const upstreamFetch = vi.fn();
+    vi.stubEnv("STREAMWELD_DEMO_UPSTREAM_ORIGIN", "https://worker.demo.test");
+    vi.stubGlobal("fetch", upstreamFetch);
+
+    const response = await vercelFunction.fetch(new Request(
+      "https://demo.test/api/streamweld?__streamweld_path=%2Fv1%2F..%2Fadmin",
+    ));
+
+    expect(response.status).toBe(404);
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+
+  it("requires a shared upstream in the hosted Vercel runtime", async () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("STREAMWELD_DEMO_UPSTREAM_ORIGIN", "");
+
+    const response = await vercelFunction.fetch(new Request(
+      "https://demo.test/api/streamweld?__streamweld_path=/api/demo/health",
+    ));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: { code: "upstream_required" } });
+  });
+
+  it("bounds public demo input and only accepts the visible model", async () => {
+    const harness = testContext();
+    const unsupported = await dispatch(new Request("https://demo.test/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "arbitrary-expensive-model" }),
+    }), harness);
+    expect(unsupported.status).toBe(400);
+    expect(await unsupported.json()).toMatchObject({ error: { code: "unsupported_model" } });
+
+    const oversized = await dispatch(new Request("https://demo.test/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "llama-3.1-8b", padding: "x".repeat(20_000) }),
+    }), harness);
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toMatchObject({ error: { code: "request_too_large" } });
+  });
+
+  it("does not expose the demo API to arbitrary browser origins", async () => {
+    const harness = testContext();
+    const response = await dispatch(new Request("https://demo.test/api/demo/health", {
+      headers: { Origin: "https://untrusted.example" },
+    }), harness);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has("Access-Control-Allow-Origin")).toBe(false);
   });
 
   it("releases journal entries before the producer reaches a terminal event", async () => {

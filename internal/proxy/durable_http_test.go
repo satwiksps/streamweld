@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 const durableHTTPTestTimeout = 5 * time.Second
@@ -447,7 +447,7 @@ func TestPersistedStopWithMalformedPayloadFailsWithoutLeakingPayload(t *testing.
 	}
 	handler := &Handler{durable: &durableService{
 		journal: memory,
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:  slog.New(slog.DiscardHandler),
 	}}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequestWithContext(

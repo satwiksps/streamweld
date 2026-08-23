@@ -200,7 +200,7 @@ func TestREADMEBenchmarkSectionIsGeneratedAndDriftChecked(t *testing.T) {
 		"Keep this body.",
 		readmeStart,
 		readmeEnd,
-		liveDemoURL,
+		"[Run the failure lab locally](" + failureLabSourcePath + ")",
 		"| pod-kill | 16 | 3 | 3 | 3 |",
 	} {
 		if !strings.Contains(string(generated), required) {

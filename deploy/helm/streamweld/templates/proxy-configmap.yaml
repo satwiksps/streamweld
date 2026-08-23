@@ -11,17 +11,20 @@ data:
   STREAMWELD_LOG_LEVEL: {{ .Values.proxy.logLevel | quote }}
   STREAMWELD_JOURNAL_BACKEND: {{ .Values.journal.backend | quote }}
   STREAMWELD_JOURNAL_TTL: {{ .Values.journal.ttl | quote }}
-  STREAMWELD_JOURNAL_MAX_BYTES_PER_STREAM: {{ .Values.journal.maxBytesPerStream | quote }}
-  STREAMWELD_JOURNAL_MAX_TOTAL_BYTES: {{ .Values.journal.maxTotalBytes | quote }}
+  # Helm 4 decodes larger JSON-schema integers as float64 values. Formatting
+  # them directly through `quote` can therefore emit scientific notation
+  # (for example, "4.194304e+06"), which Go's strconv.ParseInt rejects.
+  STREAMWELD_JOURNAL_MAX_BYTES_PER_STREAM: {{ printf "%d" (int64 .Values.journal.maxBytesPerStream) | quote }}
+  STREAMWELD_JOURNAL_MAX_TOTAL_BYTES: {{ printf "%d" (int64 .Values.journal.maxTotalBytes) | quote }}
   STREAMWELD_REDIS_KEY_PREFIX: {{ .Values.journal.redis.keyPrefix | quote }}
-  STREAMWELD_READER_MAX_LAG_BYTES: {{ .Values.reader.maxLagBytes | quote }}
+  STREAMWELD_READER_MAX_LAG_BYTES: {{ printf "%d" (int64 .Values.reader.maxLagBytes) | quote }}
   STREAMWELD_READER_WRITE_TIMEOUT: {{ .Values.reader.writeTimeout | quote }}
-  STREAMWELD_MAX_MIGRATIONS: {{ .Values.migration.maxMigrations | quote }}
-  STREAMWELD_MAX_MIGRATION_TOKENS: {{ .Values.migration.maxTokens | quote }}
+  STREAMWELD_MAX_MIGRATIONS: {{ printf "%d" (int .Values.migration.maxMigrations) | quote }}
+  STREAMWELD_MAX_MIGRATION_TOKENS: {{ printf "%d" (int64 .Values.migration.maxTokens) | quote }}
   STREAMWELD_MAX_STREAM_DURATION: {{ .Values.migration.maxStreamDuration | quote }}
   STREAMWELD_ALLOW_CROSS_VERSION: {{ .Values.migration.allowCrossVersion | quote }}
   STREAMWELD_ALLOW_STRUCTURED_RESUME: {{ .Values.migration.allowStructuredResume | quote }}
-  STREAMWELD_SEAM_WINDOW_BYTES: {{ .Values.migration.seamWindowBytes | quote }}
+  STREAMWELD_SEAM_WINDOW_BYTES: {{ printf "%d" (int .Values.migration.seamWindowBytes) | quote }}
   STREAMWELD_TEMPLATE_MODE: {{ .Values.migration.templateMode | quote }}
   STREAMWELD_STALL_DETECTION_ENABLED: {{ .Values.migration.stallDetection.enabled | quote }}
   STREAMWELD_STALL_TIMEOUT: {{ .Values.migration.stallDetection.timeout | quote }}

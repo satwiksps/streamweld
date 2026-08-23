@@ -16,9 +16,9 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/streamweld/streamweld/internal/proxy"
-	"github.com/streamweld/streamweld/internal/telemetry"
-	"github.com/streamweld/streamweld/internal/version"
+	"github.com/satwiksps/streamweld/internal/proxy"
+	"github.com/satwiksps/streamweld/internal/telemetry"
+	"github.com/satwiksps/streamweld/internal/version"
 )
 
 func main() {

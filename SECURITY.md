@@ -9,9 +9,9 @@ issues privately and give maintainers time to investigate before disclosure.
 
 | Version | Security support |
 |---|---|
-| Latest published release | Supported |
-| `main` and unreleased builds | Investigated to prepare the next release; not a stable deployment target |
-| Older releases | Not routinely patched; upgrade to the latest release |
+| `main` and unreleased builds | Investigated to prepare the first release; not a stable deployment target |
+| Tagged releases | None published yet; after `v0.1.0`, the latest release will be supported |
+| Superseded releases | Not routinely patched; upgrade to the latest release |
 
 If a fix can be backported safely, maintainers may publish an additional patch
 release. This table does not promise long-term support for any minor version.
@@ -20,7 +20,7 @@ release. This table does not promise long-term support for any minor version.
 
 Use GitHub's private vulnerability reporting form:
 
-[Report a Streamweld vulnerability privately](https://github.com/streamweld/streamweld/security/advisories/new)
+[Report a Streamweld vulnerability privately](https://github.com/satwiksps/streamweld/security/advisories/new)
 
 Do not open a public issue, discussion, or pull request containing vulnerability
 details. If GitHub private reporting is unavailable, open a public issue that

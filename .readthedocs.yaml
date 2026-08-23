@@ -1,0 +1,17 @@
+# Read the Docs configuration for the Astro/Starlight documentation site.
+# https://docs.readthedocs.com/platform/stable/config-file/v2.html
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    nodejs: "24"
+  jobs:
+    install:
+      - npm install --global pnpm@11.19.0
+      - pnpm install --frozen-lockfile
+    build:
+      html:
+        - pnpm --filter @streamweld/docs-site run build:astro
+        - mkdir -p "$READTHEDOCS_OUTPUT/html"
+        - cp -a apps/docs-site/astro-dist/. "$READTHEDOCS_OUTPUT/html/"

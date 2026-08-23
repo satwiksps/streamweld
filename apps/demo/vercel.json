@@ -1,0 +1,26 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "pnpm --filter @streamweld/client build && pnpm run build:vercel",
+  "outputDirectory": "dist",
+  "fluid": true,
+  "functions": {
+    "api/streamweld.ts": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/demo/:path*",
+      "destination": "/api/streamweld?__streamweld_path=/api/demo/:path*"
+    },
+    {
+      "source": "/v1/:path*",
+      "destination": "/api/streamweld?__streamweld_path=/v1/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

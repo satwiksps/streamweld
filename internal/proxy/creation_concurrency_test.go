@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/backend"
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/backend"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 func TestBlockedIdempotencyReservationDoesNotSerializeUnrelatedCreation(t *testing.T) {
@@ -180,7 +179,7 @@ func newCreationConcurrencyService(
 		journal:     journalBackend,
 		ids:         journal.NewIDGenerator(nil, nil),
 		idempotency: registry,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.DiscardHandler),
 		backends:    pool,
 	}
 	t.Cleanup(func() {

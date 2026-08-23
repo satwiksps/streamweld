@@ -7,7 +7,7 @@ imagePullSecrets: []
 proxy:
   replicaCount: 1
   image:
-    repository: ghcr.io/streamweld/streamweld-proxy
+    repository: ghcr.io/satwiksps/streamweld-proxy
     tag: ""
     pullPolicy: IfNotPresent
   backendURL: http://streamweld-sample-backend:8000
@@ -91,7 +91,7 @@ operator:
   enabled: true
   replicaCount: 1
   image:
-    repository: ghcr.io/streamweld/streamweld-operator
+    repository: ghcr.io/satwiksps/streamweld-operator
     tag: ""
     pullPolicy: IfNotPresent
   leaderElect: true
@@ -157,7 +157,9 @@ redis:
     pullPolicy: IfNotPresent
   auth:
     enabled: true
-    password: ""
+    # Set auth.password to a non-empty value only when supplying the Redis
+    # credential explicitly. When omitted, the chart generates and retains a
+    # release-scoped password Secret.
   resources:
     requests:
       cpu: 50m

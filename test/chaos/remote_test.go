@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 func TestAttachedStreamObservesMigrationSeamAndPromptRebilling(t *testing.T) {

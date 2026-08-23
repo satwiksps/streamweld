@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/streamweld/streamweld/test/chaos"
+	"github.com/satwiksps/streamweld/test/chaos"
 )
 
 const (

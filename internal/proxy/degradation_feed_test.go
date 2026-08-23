@@ -15,8 +15,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	redislib "github.com/redis/go-redis/v9"
-	"github.com/streamweld/streamweld/internal/journal"
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 func TestDegradedFeedBoundsAndReclaimsEachSubscriber(t *testing.T) {

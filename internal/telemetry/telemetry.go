@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -154,7 +154,7 @@ func New(
 	labels := []string{"route", "model"}
 	recorder := &Recorder{
 		gatherer:     gatherer,
-		tracer:       provider.Tracer("github.com/streamweld/streamweld/internal/proxy"),
+		tracer:       provider.Tracer("github.com/satwiksps/streamweld/internal/proxy"),
 		journalState: make(map[Labels]*journalHealth),
 		streamsActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "streamweld_streams_active",

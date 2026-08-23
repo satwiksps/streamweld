@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.26.5
+ARG GO_VERSION=1.26.6
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine3.23 AS build
 
 WORKDIR /src
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath \
-      -ldflags="-s -w -X github.com/streamweld/streamweld/internal/version.Version=${VERSION} -X github.com/streamweld/streamweld/internal/version.Commit=${COMMIT} -X github.com/streamweld/streamweld/internal/version.Date=${DATE}" \
+      -ldflags="-s -w -X github.com/satwiksps/streamweld/internal/version.Version=${VERSION} -X github.com/satwiksps/streamweld/internal/version.Commit=${COMMIT} -X github.com/satwiksps/streamweld/internal/version.Date=${DATE}" \
       -o /out/streamweld-proxy ./cmd/streamweld-proxy
 
 FROM build AS operator-build
@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath \
-      -ldflags="-s -w -X github.com/streamweld/streamweld/internal/version.Version=${VERSION} -X github.com/streamweld/streamweld/internal/version.Commit=${COMMIT} -X github.com/streamweld/streamweld/internal/version.Date=${DATE}" \
+      -ldflags="-s -w -X github.com/satwiksps/streamweld/internal/version.Version=${VERSION} -X github.com/satwiksps/streamweld/internal/version.Commit=${COMMIT} -X github.com/satwiksps/streamweld/internal/version.Date=${DATE}" \
       -o /out/streamweld-operator ./cmd/streamweld-operator
 
 FROM scratch AS proxy
@@ -38,8 +38,8 @@ ARG COMMIT=unknown
 ARG DATE=unknown
 LABEL org.opencontainers.image.title="Streamweld proxy" \
       org.opencontainers.image.description="Durable OpenAI-compatible inference stream proxy" \
-      org.opencontainers.image.source="https://github.com/streamweld/streamweld" \
-      org.opencontainers.image.url="https://github.com/streamweld/streamweld" \
+      org.opencontainers.image.source="https://github.com/satwiksps/streamweld" \
+      org.opencontainers.image.url="https://github.com/satwiksps/streamweld" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
@@ -56,8 +56,8 @@ ARG COMMIT=unknown
 ARG DATE=unknown
 LABEL org.opencontainers.image.title="Streamweld operator" \
       org.opencontainers.image.description="Kubernetes control plane for durable inference streams" \
-      org.opencontainers.image.source="https://github.com/streamweld/streamweld" \
-      org.opencontainers.image.url="https://github.com/streamweld/streamweld" \
+      org.opencontainers.image.source="https://github.com/satwiksps/streamweld" \
+      org.opencontainers.image.url="https://github.com/satwiksps/streamweld" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \

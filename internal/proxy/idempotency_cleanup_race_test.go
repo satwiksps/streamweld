@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 func TestStaleIdempotencyCleanerCannotDeleteNewReadyWinner(t *testing.T) {
@@ -62,7 +61,7 @@ func TestStaleIdempotencyCleanerCannotDeleteNewReadyWinner(t *testing.T) {
 		journal:     journalView,
 		idempotency: gated,
 		ids:         &durableSequentialIDs{},
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.DiscardHandler),
 	}
 	request := httptest.NewRequestWithContext(
 		context.Background(), http.MethodPost, "/v1/chat/completions", nil,

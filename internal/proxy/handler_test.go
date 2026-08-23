@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/proxy/sse"
+	"github.com/satwiksps/streamweld/internal/proxy/sse"
 )
 
 func TestPassthroughPreservesRequestAndResponse(t *testing.T) {

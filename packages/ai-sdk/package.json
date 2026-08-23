@@ -5,12 +5,12 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/streamweld/streamweld.git",
+    "url": "git+https://github.com/satwiksps/streamweld.git",
     "directory": "packages/ai-sdk"
   },
-  "homepage": "https://github.com/streamweld/streamweld#readme",
+  "homepage": "https://github.com/satwiksps/streamweld#readme",
   "bugs": {
-    "url": "https://github.com/streamweld/streamweld/issues"
+    "url": "https://github.com/satwiksps/streamweld/issues"
   },
   "type": "module",
   "sideEffects": false,

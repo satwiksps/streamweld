@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 func TestStreamResponseWriterBoundsWritesAndFlushes(t *testing.T) {
@@ -78,7 +77,7 @@ func TestBlockedDownstreamWriterDetachesWithoutBlockingProducerAppend(t *testing
 			ReaderWriteTimeout: 100 * time.Millisecond,
 		},
 		journal: memory,
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:  slog.New(slog.DiscardHandler),
 	}
 	runtimeContext, cancelRuntime := context.WithCancelCause(rootContext)
 	defer cancelRuntime(context.Canceled)

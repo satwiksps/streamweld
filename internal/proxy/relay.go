@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/journal"
+	"github.com/satwiksps/streamweld/internal/journal"
 )
 
 const (
@@ -255,7 +255,10 @@ func (coordinator *relayCoordinator) tryServeRemoteStop(
 		return false
 	}
 	if err := coordinator.validateLocatedOwner(owner); err != nil {
-		coordinator.logger.WarnContext(request.Context(), "reject unsafe stream owner stop relay", "stream_id", id, "owner", owner.ReplicaID, "error", err)
+		coordinator.logger.WarnContext(request.Context(), "reject unsafe stream owner stop relay",
+			"stream_id", safeLogString(id.String()),
+			"owner", safeLogString(owner.ReplicaID),
+			"error", safeLogError(err))
 		return false
 	}
 	endpoint, err := relayOperationURL(owner.RelayURL, id, "stop")
@@ -269,12 +272,17 @@ func (coordinator *relayCoordinator) tryServeRemoteStop(
 	relayRequest.Header.Set("User-Agent", "")
 	response, err := coordinator.client.Do(relayRequest)
 	if err != nil {
-		coordinator.logger.WarnContext(request.Context(), "connect stream owner stop relay", "stream_id", id, "owner", owner.ReplicaID, "error", err)
+		coordinator.logger.WarnContext(request.Context(), "connect stream owner stop relay",
+			"stream_id", safeLogString(id.String()),
+			"owner", safeLogString(owner.ReplicaID),
+			"error", safeLogError(err))
 		return false
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil {
-			coordinator.logger.DebugContext(request.Context(), "close owner stop relay response", "stream_id", id, "error", closeErr)
+			coordinator.logger.DebugContext(request.Context(), "close owner stop relay response",
+				"stream_id", safeLogString(id.String()),
+				"error", safeLogError(closeErr))
 		}
 	}()
 	if !relayStopStatus(response.StatusCode) || !relayMediaType(response.Header, "application/json") {
@@ -319,12 +327,17 @@ func (coordinator *relayCoordinator) tryServeRemoteEvents(
 		return false
 	}
 	if err := coordinator.validateLocatedOwner(owner); err != nil {
-		coordinator.logger.WarnContext(request.Context(), "reject unsafe stream owner relay", "stream_id", id, "owner", owner.ReplicaID, "error", err)
+		coordinator.logger.WarnContext(request.Context(), "reject unsafe stream owner relay",
+			"stream_id", safeLogString(id.String()),
+			"owner", safeLogString(owner.ReplicaID),
+			"error", safeLogError(err))
 		return false
 	}
 	endpoint, err := relayEventsURL(owner.RelayURL, id)
 	if err != nil {
-		coordinator.logger.WarnContext(request.Context(), "reject invalid stream owner relay", "stream_id", id, "error", err)
+		coordinator.logger.WarnContext(request.Context(), "reject invalid stream owner relay",
+			"stream_id", safeLogString(id.String()),
+			"error", safeLogError(err))
 		return false
 	}
 	relayRequest, err := http.NewRequestWithContext(request.Context(), http.MethodGet, endpoint, nil)
@@ -340,12 +353,17 @@ func (coordinator *relayCoordinator) tryServeRemoteEvents(
 	}
 	response, err := coordinator.client.Do(relayRequest)
 	if err != nil {
-		coordinator.logger.WarnContext(request.Context(), "connect stream owner relay", "stream_id", id, "owner", owner.ReplicaID, "error", err)
+		coordinator.logger.WarnContext(request.Context(), "connect stream owner relay",
+			"stream_id", safeLogString(id.String()),
+			"owner", safeLogString(owner.ReplicaID),
+			"error", safeLogError(err))
 		return false
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil {
-			coordinator.logger.DebugContext(request.Context(), "close owner relay response", "stream_id", id, "error", closeErr)
+			coordinator.logger.DebugContext(request.Context(), "close owner relay response",
+				"stream_id", safeLogString(id.String()),
+				"error", safeLogError(closeErr))
 		}
 	}()
 	if response.StatusCode != http.StatusOK {
@@ -382,7 +400,10 @@ func (coordinator *relayCoordinator) tryServeRemoteEvents(
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) && !errors.Is(request.Context().Err(), context.Canceled) {
-				coordinator.logger.WarnContext(request.Context(), "read stream owner relay", "stream_id", id, "owner", owner.ReplicaID, "error", readErr)
+				coordinator.logger.WarnContext(request.Context(), "read stream owner relay",
+					"stream_id", safeLogString(id.String()),
+					"owner", safeLogString(owner.ReplicaID),
+					"error", safeLogError(readErr))
 			}
 			return true
 		}

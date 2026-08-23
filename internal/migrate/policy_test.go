@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streamweld/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/conformance"
 )
 
 func TestDefaultPolicyAndValidation(t *testing.T) {
