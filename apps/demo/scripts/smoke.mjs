@@ -116,11 +116,17 @@ async function readPrefix(response, minimumCursor) {
       if (record !== null) {
         records.push(record);
         if (record.id !== null) cursor = record.id;
+        if (cursor >= minimumCursor) {
+          // A CDN may coalesce the entire response into one network chunk.
+          // Stop parsing at the intended application cursor so bytes received
+          // later in that chunk are deliberately discarded and replayed.
+          await reader.cancel();
+          return { cursor, text: messageText(records) };
+        }
       }
     }
   }
-  await reader.cancel();
-  return { cursor, text: messageText(records) };
+  throw new Error("stream ended before a resumable prefix was observed");
 }
 
 function parseRecords(body) {
