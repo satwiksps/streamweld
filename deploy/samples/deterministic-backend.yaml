@@ -106,12 +106,23 @@ data:
             self.send_header("Connection", "close")
             self.end_headers()
             try:
-                for piece in pieces:
+                for completion_tokens, piece in enumerate(pieces, start=1):
                     event = {
                         "id": "chatcmpl-deterministic",
                         "object": "chat.completion.chunk",
                         "model": MODEL,
                         "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+                        # Streamweld must know the accepted token count at any
+                        # migration point to recompute max_tokens exactly. Real
+                        # backends can provide incremental usage. This fixture
+                        # exposes exact per-attempt usage on every chunk so the
+                        # rollout assertion tests
+                        # lossless continuation rather than byte-count fallback.
+                        "usage": {
+                            "prompt_tokens": 0,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": completion_tokens,
+                        },
                     }
                     self.wfile.write(b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n")
                     self.wfile.flush()

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +12,7 @@ import (
 func TestBackendOOMFailsOnlyTheOriginalAttempt(t *testing.T) {
 	t.Parallel()
 
-	handler := newHandler(config{defaultTokens: 12}, slog.New(slog.DiscardHandler))
+	handler := newHandler(config{defaultTokens: 12})
 	original := performCompletion(t, handler, `{
 		"model":"streamweld/deterministic-chaos",
 		"messages":[{"role":"user","content":"streamweld-chaos:backend-oom:0"}],
@@ -53,14 +52,6 @@ func TestUnsafeTemplateBreaksTheTwoRequiredConformanceProbes(t *testing.T) {
 	}
 	if got := conformanceOutput([]message{{Role: "assistant", Content: "1 2 3 4"}}, false); got != "5 6 7 8 9 10" {
 		t.Fatalf("safe continuation output = %q", got)
-	}
-}
-
-func TestSafeLogStringEscapesRecordBreaks(t *testing.T) {
-	t.Parallel()
-
-	if got, want := safeLogString("scenario\r\nforged"), `scenario\r\nforged`; got != want {
-		t.Fatalf("safeLogString() = %q, want %q", got, want)
 	}
 }
 
