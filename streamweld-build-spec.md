@@ -70,7 +70,7 @@ Put this comparison in the README. It is the project's reason to exist and it mu
 | Kubernetes operator | **Go** | controller-runtime is the only serious option |
 | `streamweldctl` CLI | **Go** | shares the protocol package |
 | Client SDK | **TypeScript** | the consumers are JS/TS apps; must ship on npm |
-| Demo + control UI | **TypeScript + React** | the failure-injection demo is the project's shop window |
+| Project website | **TypeScript + React** | a small, static landing page for the public project |
 
 The TypeScript is load-bearing, not decorative. The SDK is how anyone actually adopts this.
 
@@ -97,7 +97,7 @@ streamweld/
 │   ├── client/                # @streamweld/client  (npm, zero deps)
 │   └── ai-sdk/                # @streamweld/ai-sdk  (Vercel AI SDK v5 ChatTransport)
 ├── apps/
-│   └── demo/                  # Vite + React failure-injection demo
+│   └── demo/                  # Vite + React project website (legacy deployment path)
 ├── deploy/
 │   ├── helm/streamweld/             # Helm chart
 │   └── samples/               # example CRs, vLLM Deployment
@@ -389,24 +389,12 @@ Requirements:
 
 ---
 
-## 9. Demo application (TypeScript + React)
+## 9. Project website (TypeScript + React)
 
-`apps/demo` — Vite + React + TS + Tailwind. This is the project's shop window; it must be genuinely convincing, not a toy.
-
-Two panes:
-
-- **Left** — a normal chat UI streaming from Streamweld.
-- **Right** — a failure injection console with buttons that hit a small demo-only backend:
-  - Kill the serving pod (SIGKILL)
-  - Trigger a rolling update to a new model version
-  - Simulate spot node reclaim (cordon + drain)
-  - Drop the client connection
-  - Press stop (to show it behaves differently from a drop)
-- **Below** — a live stream timeline: seq numbers, chunk arrival, migration markers annotated with backend id and rescued token count, seam overlap, resume points.
-
-Include a toggle: **Streamweld off** routes directly to vLLM. The same button press then truncates the response. The side-by-side is the entire pitch.
-
-Deploy it publicly. A URL an interviewer can click is worth more than the README.
+`apps/demo` retains the historical Vercel root path but contains only the static
+Streamweld project website. It explains the problem, architecture, safety
+boundary, source quickstart, and links to the documentation and repository.
+It has no simulation API, model backend, failure controls, or persistent state.
 
 ---
 
@@ -483,7 +471,7 @@ GitHub Actions:
 - Release: `goreleaser` for binaries, multi-arch images to ghcr.io, Helm chart to OCI, npm publish with provenance
 - Docs site from `docs/` (Astro Starlight or MkDocs Material)
 
-Everything reproducible via `make`: `make dev`, `make test`, `make e2e`, `make bench`, `make demo`.
+Everything reproducible via `make`: `make dev`, `make test`, `make e2e`, `make bench`, `make website`.
 
 ---
 
@@ -523,9 +511,9 @@ CRDs, reconcilers, EndpointSlice watching, conformance gating, drain protocol, o
 `@streamweld/client` and `@streamweld/ai-sdk`, full test suite including simulated transport failures, published to npm.
 **Accept:** an app using `useChat` adopts Streamweld by changing one line and survives all Phase 3 and 6 failure modes.
 
-### Phase 8 — Observability + chaos + demo
-Metrics, OTel spans, Grafana dashboard, full chaos harness, `benchmarks/results.md`, demo app deployed.
-**Accept:** README numbers are generated from committed benchmark output. Demo URL is live.
+### Phase 8 — Observability + chaos + website
+Metrics, OTel spans, Grafana dashboard, full chaos harness, `benchmarks/results.md`, and a static project website.
+**Accept:** README evidence is generated from committed benchmark output and the project website is live.
 
 ### Phase 9 — Release
 Terraform module, docs site, `goreleaser`, container images, Helm OCI, CONTRIBUTING, SECURITY, Apache-2.0, issue templates, `good-first-issue` set.
@@ -537,14 +525,13 @@ Terraform module, docs site, `goreleaser`, container images, Helm OCI, CONTRIBUT
 
 Structure it in this order:
 
-1. One-sentence thesis + a 20-second asciinema/GIF of the demo: pod dies, stream survives.
-2. The problem table from §1.
-3. **Honest prior-art comparison** — Dynamo, Vercel `resumable-stream`, LLM gateways. What each does well. What Streamweld adds. What Streamweld does *not* do.
-4. Quickstart: `helm install` → `kubectl apply -f samples/` → `curl` that survives a `kubectl delete pod`.
-5. Results table generated from `benchmarks/results.md`.
-6. Compatibility table from the conformance probes.
-7. Architecture diagram.
-8. Configuration reference.
+1. Branded project banner and one-paragraph thesis.
+2. Clear pre-release notice and primary links.
+3. Three core operations: reader resume, producer migration, and explicit stop.
+4. Compact architecture diagram.
+5. Source quickstart and safety boundary.
+6. Concise generated evidence summary with links to full results.
+7. Documentation and contribution links.
 9. Non-goals.
 
 Never claim resilience — show the injected-failure table. That evidence discipline is the point.

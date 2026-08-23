@@ -21,11 +21,16 @@ safe.
 9. Only complete SSE events and valid UTF-8 enter the journal.
 10. Producer migration runs only after every correctness gate passes.
 
-```text
-created ──▶ open / producing ──▶ done
-                    │           error
-                    │           stopped
-                    └── migration ──▶ open / producing
+```mermaid
+stateDiagram-v2
+    [*] --> Producing: create + open
+    Producing --> Producing: migration
+    Producing --> Done: done
+    Producing --> Error: error
+    Producing --> Stopped: explicit stop
+    Done --> [*]
+    Error --> [*]
+    Stopped --> [*]
 ```
 
 Migration is an event inside the producing state, not a terminal state. Each

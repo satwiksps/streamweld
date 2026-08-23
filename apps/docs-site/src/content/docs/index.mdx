@@ -1,71 +1,56 @@
 ---
-title: Durable token streams for self-hosted inference
-description: Streamweld keeps one logical LLM response alive when a backend pod, node, or client connection disappears.
-template: splash
-hero:
-  tagline: Every generation gets an identity, an append-only journal, and an exact resume cursor.
-  actions:
-    - text: Install Streamweld
-      link: getting-started/
-      icon: right-arrow
-    - text: Open the live failure lab
-      link: https://streamweld.vercel.app/
-      icon: external
-      variant: minimal
+title: Streamweld documentation
+description: Install, integrate, and operate durable streams for self-hosted LLM inference.
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## A small durability layer, not another model gateway
+Streamweld is an OpenAI-compatible proxy and Kubernetes operator that keeps one
+logical LLM response recoverable across reader disconnects and eligible backend
+failures.
+
+:::note[Pre-release]
+The source tree is runnable today. Versioned binaries, container images, the
+Helm OCI chart, and npm packages will be published with the first release.
+:::
+
+## Start here
 
 <CardGrid>
-	<Card title="Reader resume" icon="refresh">
-		Reconnect with the stream ID and exact last event ID. Already-delivered chunks stay delivered exactly once.
+	<Card title="Install from source" icon="rocket">
+		Follow the [ten-minute guide](getting-started/) to build the source, install
+		the chart into kind, and exercise the durable request path.
 	</Card>
-	<Card title="Producer migration" icon="seti:config">
-		Continue on an eligible backend only when chat-template probes and runtime safety predicates say the seam is safe.
+	<Card title="Understand the contract" icon="document">
+		Read the [durability guarantees](concepts/durability/) before choosing journal
+		and migration policies.
 	</Card>
-	<Card title="Explicit stop" icon="stop">
-		Stopping generation is a protocol operation. Dropping a socket only detaches the reader.
+	<Card title="Operate in Kubernetes" icon="seti:config">
+		Configure [routes, policies, Redis, draining, and observability](operations/kubernetes/).
 	</Card>
 </CardGrid>
 
-The OpenAI-compatible proxy handles the data plane. A Kubernetes operator tracks
-eligible backends, drains rollouts, and distributes route snapshots without
-restarting the proxy.
+## System boundary
 
-```text
-client ──SSE──▶ proxy ──▶ backend A ✕
-                  │            │
-                  ▼            └── journaled prefix
-             append-only              │
-               journal                ▼
-                  │              backend B ──▶ same stream
-                  └── exact replay cursor ──▶ reconnected reader
+```mermaid
+flowchart LR
+    Client[OpenAI-compatible client] -->|HTTP + SSE| Proxy[Streamweld proxy]
+    Proxy -->|request attempts| Backends[Self-hosted inference pool]
+    Proxy <--> Journal[(Memory or Redis journal)]
+    Operator[Kubernetes operator] -->|routes and drain state| Proxy
+    Client -.->|stream ID + cursor| Journal
 ```
 
-## Start with evidence
+Streamweld is a durability layer, not a model server, scheduler, authentication
+gateway, or billing system. It continues a generation only when compatibility
+probes and runtime safety predicates make the continuation eligible.
 
-The deterministic failure matrix checks the entire output, not merely the HTTP
-status. The committed local profile covers nine fault shapes; nightly CI repeats
-the physical Kubernetes scenarios on kind. Timing figures are scoped to the host
-and profile that produced them.
+## Key concepts
 
-<CardGrid>
-	<Card title="Run the quickstart" icon="rocket">
-		Install the chart and CPU-only fixtures, then delete a serving backend while a request is open.
-	</Card>
-	<Card title="Read the protocol" icon="document">
-		See the ordered journal, exclusive cursor, terminal states, and exact failure responses.
-	</Card>
-	<Card title="Try the failure lab" icon="external">
-		[Open the live lab](https://streamweld.vercel.app/) to explore reconnect, stop, and journal behavior without a cluster.
-	</Card>
-</CardGrid>
+- **Reader resume** replays strictly after an exact cursor and then tails live.
+- **Producer migration** creates a new backend attempt without changing the logical stream.
+- **Explicit stop** is terminal; dropping a socket only detaches that reader.
+- **Journal commit** happens before an event becomes visible for replay.
 
-:::caution[Know the boundary]
-Streamweld can continue a generation only when the request shape, token budget,
-model version, and chat template make continuation safe. It deliberately refuses
-unsafe migrations. It does not make sampling bit-for-bit deterministic, replace a
-model scheduler, or provide an authentication and billing gateway.
-:::
+For implementation-level details, continue to the [architecture](concepts/architecture/)
+or the [normative protocol](source/protocol/).

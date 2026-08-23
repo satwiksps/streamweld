@@ -200,8 +200,8 @@ func TestREADMEBenchmarkSectionIsGeneratedAndDriftChecked(t *testing.T) {
 		"Keep this body.",
 		readmeStart,
 		readmeEnd,
-		"[Run the failure lab locally](" + failureLabSourcePath + ")",
-		"| pod-kill | 16 | 3 | 3 | 3 |",
+		"checks complete output across 9 deterministic fault scenarios",
+		"[methodology](benchmarks/README.md)",
 	} {
 		if !strings.Contains(string(generated), required) {
 			t.Errorf("generated README does not contain %q", required)
@@ -218,7 +218,7 @@ func TestREADMEBenchmarkSectionIsGeneratedAndDriftChecked(t *testing.T) {
 		t.Fatal("README update is not reproducible")
 	}
 
-	drifted := strings.Replace(string(stable), "| pod-kill |", "| manually-edited |", 1)
+	drifted := strings.Replace(string(stable), "9 deterministic fault scenarios", "manually edited scenarios", 1)
 	if err := os.WriteFile(path, []byte(drifted), 0o644); err != nil {
 		t.Fatal(err)
 	}

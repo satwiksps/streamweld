@@ -18,7 +18,6 @@ const (
 	readmeEnd              = "<!-- streamweld:benchmarks:end -->"
 	operationsRolloutStart = "<!-- streamweld:rollout-impact:start -->"
 	operationsRolloutEnd   = "<!-- streamweld:rollout-impact:end -->"
-	failureLabSourcePath   = "apps/demo/README.md"
 )
 
 // WriteArtifacts validates and writes both committed benchmark formats from
@@ -115,22 +114,12 @@ func RenderMarkdown(report Report) []byte {
 func RenderREADMEBenchmarkSection(report Report) []byte {
 	var output strings.Builder
 	output.WriteString(readmeStart)
-	output.WriteString("\n## Local chaos model (simulation) results\n\n")
-	output.WriteString("[Run the failure lab locally](")
-	output.WriteString(failureLabSourcePath)
-	output.WriteString(") to compare the durable and direct paths side by side.\n\n")
-	output.WriteString("This table is generated from [`benchmarks/results.json`](benchmarks/results.json) by `make bench`; edits inside these markers are rejected by `make bench-check`. It reports an in-process model/simulation—not Kubernetes process disruption. The non-skippable nightly [`kind` matrix](.github/workflows/nightly.yml) is the physical failure-injection gate. The committed run is the honestly labelled `")
+	output.WriteString("\n## Evidence\n\n")
+	output.WriteString("The committed `")
 	output.WriteString(markdownCell(report.Profile.Name))
-	output.WriteString("` profile, not a kind or GPU claim.\n\n")
-	_, _ = fmt.Fprintf(
-		&output,
-		"TTFT is a wall-clock p50 from the recorded host. Both paths include the fake backend's %.3f ms first-token delay, values serialize to %.3f ms, and CI gates correctness rather than cross-host timing.\n\n",
-		report.Profile.TTFTBackendDelayMilliseconds,
-		report.Profile.TTFTSerializationMilliseconds,
-	)
-	writeRolloutDurationImpact(&output, report, "")
-	writeResultTable(&output, report)
-	output.WriteString("\nFull metadata and scenario-specific terminal outcomes are in [`benchmarks/results.md`](benchmarks/results.md).\n")
+	output.WriteString("` profile checks complete output across ")
+	output.WriteString(strconv.Itoa(len(report.Results)))
+	output.WriteString(" deterministic fault scenarios. It is an in-process correctness model, not a Kubernetes or GPU benchmark. The scheduled [`kind` matrix](.github/workflows/nightly.yml) is the physical failure gate. See the [results](benchmarks/results.md) and [methodology](benchmarks/README.md).\n")
 	output.WriteString(readmeEnd)
 	return []byte(output.String())
 }

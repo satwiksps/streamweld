@@ -16,8 +16,8 @@ protocol types and operational behavior with those services.
 
 Adoption happens primarily in JavaScript and TypeScript applications. The
 durable client must expose async iterables, reconnect transparently in browsers
-and server runtimes, and integrate with the Vercel AI SDK. The demonstration UI
-is also a web application.
+and server runtimes, and integrate with the Vercel AI SDK. The static project
+website is also a web application.
 
 A single implementation language would optimize one of these environments at
 the expense of the other. Cross-language behavior must instead be kept aligned
@@ -34,11 +34,11 @@ Use the following fixed language boundary:
 | `streamweldctl` CLI | Go | Reuses protocol, backend, conformance, and drain code from the Go implementation |
 | `@streamweld/client` | TypeScript | Provides the native API surface for browser, Node 20+, Deno, Bun, and edge consumers |
 | `@streamweld/ai-sdk` | TypeScript | Implements the Vercel AI SDK v5 `ChatTransport` boundary directly |
-| Demo and control UI | TypeScript with React | Shares SDK types and targets the browser deployment environment |
+| Project website | TypeScript with React | Provides the public project landing page |
 
 The Go components live under `cmd/`, `internal/`, and `controllers/`. The
-published TypeScript packages live under `packages/`, and the demo lives under
-`apps/demo/`.
+published TypeScript packages live under `packages/`, and the website retains
+the established deployment path under `apps/demo/`.
 
 The language boundary is the versioned HTTP/SSE protocol in
 `docs/protocol.md`. Go implementation structs are not the public contract, and
@@ -54,7 +54,7 @@ Dependency policy follows the same boundary:
   available in every supported runtime and publishes ESM and CommonJS builds.
 - The AI SDK adapter remains a separate package so its peer integration does
   not add runtime weight to the core client.
-- UI-only dependencies remain in the demo and never enter the client package or
+- Website-only dependencies remain in the website app and never enter the client package or
   Go data plane.
 
 ## Consequences
@@ -88,7 +88,7 @@ solely through language-specific types.
 
 ### All TypeScript
 
-This would simplify the web SDK and demo but make the Kubernetes operator and
+This would simplify the web SDK and website but make the Kubernetes operator and
 high-concurrency streaming data plane depend on a less natural control-plane
 ecosystem. It would also prevent direct code sharing with a Go operational CLI.
 
@@ -96,7 +96,7 @@ ecosystem. It would also prevent direct code sharing with a Go operational CLI.
 
 This would simplify repository tooling but leave browser adoption dependent on
 generated or hand-written bindings that are not idiomatic TypeScript. It would
-also weaken the required Vercel AI SDK integration and browser-focused demo.
+also weaken the required Vercel AI SDK integration and browser support.
 
 ### Go services with no maintained client SDK
 

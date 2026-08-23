@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import mermaid from 'astro-mermaid';
 import starlight from '@astrojs/starlight';
 
 const readTheDocsCanonical = process.env.READTHEDOCS_CANONICAL_URL;
@@ -21,6 +22,11 @@ export default defineConfig({
 	trailingSlash: 'always',
 	outDir: './astro-dist',
 	integrations: [
+		mermaid({
+			autoTheme: true,
+			enableLog: false,
+			mermaidConfig: { flowchart: { curve: 'linear' } },
+		}),
 		starlight({
 			title: 'Streamweld',
 			description: 'Durable token streams for self-hosted LLM inference.',

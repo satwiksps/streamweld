@@ -59,13 +59,16 @@ Every conforming implementation preserves these invariants:
 
 A stream has this state machine:
 
-```text
-               +---------------- migration ----------------+
-               |                                           |
-created -> open/producing ----------------------------------+
-                  |            |                    |
-                  |            |                    |
-                 done         error               stopped
+```mermaid
+stateDiagram-v2
+    [*] --> Producing: create + open
+    Producing --> Producing: migration
+    Producing --> Done: done
+    Producing --> Error: error
+    Producing --> Stopped: explicit stop
+    Done --> [*]
+    Error --> [*]
+    Stopped --> [*]
 ```
 
 All three terminal states are final. Migration is an event within

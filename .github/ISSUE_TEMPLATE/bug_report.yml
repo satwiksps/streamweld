@@ -21,7 +21,7 @@ body:
         - streamweldctl
         - TypeScript client
         - Vercel AI SDK adapter
-        - Demo application
+        - Project website
         - Chaos or benchmark harness
         - Build, release, or documentation
         - Not sure
@@ -48,7 +48,7 @@ body:
         - Local unit or integration test
         - kind or other local Kubernetes cluster
         - TypeScript/browser/edge runtime only
-        - Hosted failure lab
+        - Project website
         - Other or not applicable
     validations:
       required: true

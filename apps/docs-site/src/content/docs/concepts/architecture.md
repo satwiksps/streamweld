@@ -6,27 +6,19 @@ description: How the proxy, journal, operator, and inference backends divide res
 Streamweld is intentionally a narrow layer between an OpenAI-compatible client
 and self-hosted inference backends.
 
-```text
-                                 Kubernetes control plane
-                          ┌────────────────────────────────┐
-                          │ InferenceRoute + policy       │
-                          │ operator + conformance cache  │
-                          └───────────────┬────────────────┘
-                                          │ route snapshots / drain
-                                          ▼
-client ── OpenAI HTTP + SSE ──▶ ┌──────────────────────┐
-                                 │ Streamweld proxy     │
-resume cursor ◀────────────────▶ │ stream + attempt     │
-                                 │ orchestration        │
-                                 └──────┬────────┬──────┘
-                                        │        │
-                              commit    │        │ OpenAI-compatible
-                                        ▼        ▼
-                                  ┌─────────┐  ┌──────────────────┐
-                                  │ journal │  │ inference pool   │
-                                  │ memory  │  │ vLLM or fixtures │
-                                  │ or Redis│  └──────────────────┘
-                                  └─────────┘
+```mermaid
+flowchart TB
+    Control[InferenceRoute + DurabilityPolicy<br/>operator + conformance cache]
+    Proxy[Streamweld proxy<br/>stream + attempt orchestration]
+    Client[OpenAI-compatible client]
+    Journal[(Journal<br/>memory or Redis)]
+    Pool[Inference pool<br/>vLLM · SGLang · TGI]
+
+    Control -->|route snapshots and drain state| Proxy
+    Client -->|OpenAI HTTP + SSE| Proxy
+    Proxy -->|streamed response| Client
+    Proxy <--> |commit, replay, tail| Journal
+    Proxy -->|OpenAI-compatible attempts| Pool
 ```
 
 ## Data plane

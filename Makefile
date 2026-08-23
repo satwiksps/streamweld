@@ -17,7 +17,7 @@ IMAGE_COMMIT ?= unknown
 IMAGE_DATE ?= unknown
 RELEASE_VERSION ?=
 
-.PHONY: help bootstrap fmt fmt-check lint lint-go lint-ts typecheck vet test test-go test-ts build build-go build-ts ci dev e2e chaos chaos-kind bench bench-check demo docs-build images image-proxy image-operator helm-lint helm-install helm-package terraform-validate terraform-lint release-version goreleaser-check release-snapshot npm-pack release-check
+.PHONY: help bootstrap fmt fmt-check lint lint-go lint-ts typecheck vet test test-go test-ts build build-go build-ts ci dev e2e chaos chaos-kind bench bench-check website docs-build images image-proxy image-operator helm-lint helm-install helm-package terraform-validate terraform-lint release-version goreleaser-check release-snapshot npm-pack release-check
 
 help: ## Show the available targets.
 	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -85,8 +85,8 @@ bench: ## Generate and verify committed benchmark reports using the CLI harness.
 bench-check: ## Verify committed benchmark provenance and correctness without re-running timings.
 	$(GO) run ./cmd/streamweldctl bench --verify
 
-demo: ## Start the failure-injection demo.
-	$(PNPM) --filter @streamweld/demo run dev
+website: ## Start the project website.
+	$(PNPM) --filter @streamweld/website run dev
 
 docs-build: ## Build the Astro Starlight documentation site.
 	$(PNPM) --filter @streamweld/docs-site run build
