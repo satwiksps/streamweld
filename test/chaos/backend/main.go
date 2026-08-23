@@ -211,6 +211,15 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 			chunk["streamweld_chaos_raw_delta"] = content
 		}
 		writeSSE(writer, chunk)
+		if offset == 0 && holdOriginalForPhysicalFailure(scenario, start) {
+			// The kind harness attaches every reader before it creates and admits
+			// a replacement backend. Keep the original producer in flight after
+			// its first observable token so cluster admission latency cannot let a
+			// short deterministic stream finish before the physical disruption.
+			// Continuation attempts have start > 0 and always run to completion.
+			<-request.Context().Done()
+			return
+		}
 		if tokenDelay > 0 {
 			select {
 			case <-time.After(tokenDelay):
@@ -225,6 +234,18 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 	})
 	_, _ = io.WriteString(writer, "data: [DONE]\n\n")
 	flush(writer)
+}
+
+func holdOriginalForPhysicalFailure(scenario string, start int) bool {
+	if start != 0 {
+		return false
+	}
+	switch scenario {
+	case "pod-kill", "rolling-update", "spot-reclaim", "unsafe-template":
+		return true
+	default:
+		return false
+	}
 }
 
 func continuationStart(messages []message) int {
