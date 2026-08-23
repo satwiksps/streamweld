@@ -2,7 +2,6 @@ package chaos
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,13 +14,6 @@ type recordingRunner struct {
 	commands     [][]string
 	podLists     []string
 	podListCalls int
-	redisPings   []commandResult
-	redisCalls   int
-}
-
-type commandResult struct {
-	output string
-	err    error
 }
 
 func (runner *recordingRunner) Run(_ context.Context, args ...string) (string, error) {
@@ -42,26 +34,15 @@ func (runner *recordingRunner) Run(_ context.Context, args ...string) (string, e
 			"metadata":{"name":"streamweld-chaos-backend-origin"},
 			"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}
 		}]}`, nil
-	case strings.Contains(joined, "redis-cli --raw") && strings.HasSuffix(joined, " PING"):
-		if len(runner.redisPings) != 0 {
-			index := min(runner.redisCalls, len(runner.redisPings)-1)
-			runner.redisCalls++
-			return runner.redisPings[index].output, runner.redisPings[index].err
-		}
-		return "PONG", nil
 	default:
 		return "ok", nil
 	}
 }
 
-func TestKindRedisRestoreWaitsForServiceDataPath(t *testing.T) {
+func TestKindRedisRestoreScalesThenWaitsForRollout(t *testing.T) {
 	t.Parallel()
 
-	runner := &recordingRunner{redisPings: []commandResult{
-		{err: errors.New("connection refused")},
-		{output: "LOADING"},
-		{output: "PONG"},
-	}}
+	runner := &recordingRunner{}
 	injector, err := NewKindInjector(testKindConfig(), runner)
 	if err != nil {
 		t.Fatal(err)
@@ -71,33 +52,15 @@ func TestKindRedisRestoreWaitsForServiceDataPath(t *testing.T) {
 	if err := injector.Restore(ctx, ScenarioRedisDown); err != nil {
 		t.Fatalf("Restore() error = %v", err)
 	}
-	if runner.redisCalls != 3 {
-		t.Fatalf("Redis Service probes = %d, want 3", runner.redisCalls)
-	}
 	wantInOrder := []string{
 		"scale deployment/streamweld-redis --namespace streamweld-system --replicas=1",
-		"rollout status deployment/streamweld-redis",
-		"exec deployment/streamweld-redis --namespace streamweld-system -- redis-cli --raw -h streamweld-redis PING",
+		"rollout status deployment/streamweld-redis --namespace streamweld-system --timeout=120s",
 	}
 	if !runner.containsInOrder(wantInOrder...) {
-		t.Fatalf("Redis restore did not gate on the Service data path: %#v", runner.commands)
+		t.Fatalf("Redis restore commands are not strictly sequenced: %#v", runner.commands)
 	}
-}
-
-func TestKindRedisRestoreFailsWhenServiceNeverRecovers(t *testing.T) {
-	t.Parallel()
-
-	runner := &recordingRunner{redisPings: []commandResult{{err: errors.New("connection refused")}}}
-	injector, err := NewKindInjector(testKindConfig(), runner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	err = injector.Restore(ctx, ScenarioRedisDown)
-	if err == nil || !strings.Contains(err.Error(), "wait for Redis Service data path") ||
-		!strings.Contains(err.Error(), "connection refused") {
-		t.Fatalf("Restore() error = %v", err)
+	if runner.contains("exec") {
+		t.Fatalf("Redis restore unexpectedly probes from a disallowed Pod identity: %#v", runner.commands)
 	}
 }
 
@@ -285,7 +248,6 @@ func testKindConfig() KindConfig {
 		BackendContainer:  "backend",
 		BackendSelector:   "app.kubernetes.io/name=streamweld-chaos-backend",
 		RedisDeployment:   "streamweld-redis",
-		RedisService:      "streamweld-redis",
 		InferenceRoute:    "deterministic-chaos",
 		StableImage:       "streamweld-chaos-backend:kind",
 		RolloutImage:      "streamweld-chaos-backend:kind-rollout",

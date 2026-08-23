@@ -144,6 +144,8 @@ kind load docker-image --name "$cluster_name" \
 kubectl create namespace streamweld-system --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f test/chaos/manifests/backend.yaml
 kubectl rollout status deployment/streamweld-chaos-backend --namespace streamweld-system --timeout=180s
+# Ordinary 64-token scenarios stay below the reader budget during injection,
+# while the zero-delay 8,192-token slow-consumer case still exceeds it.
 helm upgrade --install streamweld deploy/helm/streamweld \
   --namespace streamweld-system \
   --create-namespace \
@@ -154,7 +156,7 @@ helm upgrade --install streamweld deploy/helm/streamweld \
   --set proxy.backendURL=http://streamweld-chaos-backend:8000 \
   --set proxy.nodeSelector.streamweld-chaos-role=system \
   --set journal.backend=redis \
-  --set reader.maxLagBytes=1024 \
+  --set reader.maxLagBytes=65536 \
   --set redis.enabled=true \
   --set operator.image.repository=streamweld-operator \
   --set operator.image.tag=chaos \

@@ -126,9 +126,15 @@ func RunRemote(ctx context.Context, config RemoteConfig) (Report, error) {
 		result, runErr := runRemoteScenario(scenarioContext, config, proxyURL, definition)
 		restoreContext, cancelRestore := context.WithTimeout(context.WithoutCancel(ctx), config.ScenarioTimeout)
 		restoreErr := config.Injector.Restore(restoreContext, definition.Scenario)
+		var recoveryErr error
+		if runErr == nil && restoreErr == nil && definition.Scenario == ScenarioRedisDown {
+			recoveryErr = waitRemoteDurability(
+				restoreContext, config.Client, proxyURL, config.ClientReconnectDelay,
+			)
+		}
 		cancelRestore()
 		cancel()
-		if err := errors.Join(runErr, restoreErr); err != nil {
+		if err := errors.Join(runErr, restoreErr, recoveryErr); err != nil {
 			return Report{}, fmt.Errorf("run %s: %w", definition.Scenario, err)
 		}
 		result.DirectTTFPMilliseconds = roundMilliseconds(measurement.DirectMilliseconds)
@@ -142,6 +148,42 @@ func RunRemote(ctx context.Context, config RemoteConfig) (Report, error) {
 		return Report{}, fmt.Errorf("remote correctness gate: %w", err)
 	}
 	return report, nil
+}
+
+func waitRemoteDurability(
+	ctx context.Context,
+	client *http.Client,
+	proxyURL string,
+	retryDelay time.Duration,
+) error {
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		stream, err := attachRemoteStream(
+			ctx, client, proxyURL, ScenarioClientDrop, -attempt, 8,
+		)
+		if err == nil {
+			err = finishRemoteStream(
+				ctx, client, proxyURL, ScenarioClientDrop, retryDelay, stream,
+			)
+		}
+		if err == nil {
+			canonical := deterministicOutput(8)
+			if stream.terminal == "done" && !stream.degraded && stream.output.String() == canonical {
+				return nil
+			}
+			err = fmt.Errorf(
+				"durability canary ended as %q (degraded=%t, output_correct=%t)",
+				stream.terminal, stream.degraded, stream.output.String() == canonical,
+			)
+		}
+		lastErr = err
+		if waitErr := waitRemoteReconnect(ctx, retryDelay); waitErr != nil {
+			return fmt.Errorf(
+				"wait for end-to-end durable proxy recovery: %w",
+				errors.Join(waitErr, lastErr),
+			)
+		}
+	}
 }
 
 func measureRemoteTTFT(
@@ -400,12 +442,20 @@ func attachRemoteStream(
 		return nil, fmt.Errorf("bound slow-consumer receive window: %w", bufferErr)
 	}
 	if response.StatusCode != http.StatusOK {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		_ = response.Body.Close()
+		message, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
+		drainErr := drainAndClose(response.Body)
+		if err := errors.Join(readErr, drainErr); err != nil {
+			return nil, fmt.Errorf(
+				"attach stream %d: status %s: %s: drain response: %w",
+				index, response.Status, bytes.TrimSpace(message), err,
+			)
+		}
 		return nil, fmt.Errorf("attach stream %d: status %s: %s", index, response.Status, bytes.TrimSpace(message))
 	}
 	if response.Header.Get("X-Streamweld-Durability") != "durable" {
-		_ = response.Body.Close()
+		if err := drainAndClose(response.Body); err != nil {
+			return nil, fmt.Errorf("attach stream %d: response is not durable: drain response: %w", index, err)
+		}
 		return nil, fmt.Errorf("attach stream %d: response is not durable", index)
 	}
 	stream := &attachedStream{
@@ -442,6 +492,9 @@ func finishRemoteStream(
 			_ = stream.response.Body.Close()
 		}
 	}()
+	if stream.readerLagged && scenario != ScenarioSlowConsumer {
+		return fmt.Errorf("stream %s unexpectedly received reader-lag eviction during %s", stream.id, scenario)
+	}
 	if scenario == ScenarioClientDrop {
 		_ = stream.response.Body.Close()
 		stream.response = nil
@@ -480,6 +533,9 @@ func finishRemoteStream(
 			if acceptErr := stream.accept(event); acceptErr != nil {
 				return acceptErr
 			}
+			if stream.readerLagged && scenario != ScenarioSlowConsumer {
+				return fmt.Errorf("stream %s unexpectedly received reader-lag eviction during %s", stream.id, scenario)
+			}
 			continue
 		}
 		if connectionSawFrame {
@@ -504,6 +560,11 @@ func finishRemoteStream(
 		connectionSawFrame = false
 	}
 	return nil
+}
+
+func drainAndClose(body io.ReadCloser) error {
+	_, readErr := io.Copy(io.Discard, body)
+	return errors.Join(readErr, body.Close())
 }
 
 func waitRemoteReconnect(ctx context.Context, delay time.Duration) error {
