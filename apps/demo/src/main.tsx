@@ -201,11 +201,11 @@ function App(): React.JSX.Element {
             <div className="mx-auto max-w-4xl text-center">
               <p className="mb-5 font-mono text-xs font-medium uppercase tracking-[0.18em] text-blue-300">Open source, Kubernetes-native, OpenAI-compatible</p>
               <h1 className="text-balance text-5xl font-semibold tracking-[-0.045em] text-white sm:text-6xl lg:text-[72px] lg:leading-[1.04]">
-                Keep every token
-                <span className="block text-zinc-400">through infrastructure failure.</span>
+                Keep one LLM response alive
+                <span className="block text-zinc-400">through connection and backend failure.</span>
               </h1>
               <p className="mx-auto mt-6 max-w-2xl text-pretty text-base leading-7 text-zinc-400 sm:text-lg sm:leading-8">
-                Streamweld gives each LLM generation a durable identity, append-only journal, and exact resume cursor across client and backend failures.
+                Streamweld sits between your OpenAI-compatible client and self-hosted model servers. It journals each generation so readers can reconnect and eligible backends can continue it safely.
               </p>
               <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
                 <a className="inline-flex h-11 w-full items-center justify-center rounded-md bg-white px-5 text-sm font-semibold text-zinc-950 transition-colors hover:bg-zinc-200 sm:w-auto" href="#get-started">Get started</a>
@@ -216,49 +216,50 @@ function App(): React.JSX.Element {
 
             <div id="product" className="mt-14 scroll-mt-24 lg:mt-16">
               <figure className="overflow-hidden rounded-xl border border-white/10 bg-[#0c0c0f] shadow-[0_32px_100px_rgba(0,0,0,0.55)]">
-                <figcaption className="sr-only">Example Streamweld durable generation report</figcaption>
+                <figcaption className="sr-only">How Streamweld journals one logical response and recovers it after client or backend failure</figcaption>
                 <div className="flex h-12 items-center justify-between border-b border-white/[0.07] bg-[#111114] px-4 sm:px-5">
                   <div className="flex min-w-0 items-center gap-3">
                     <span className="grid size-6 shrink-0 place-items-center rounded border border-white/10 bg-white/[0.03] font-mono text-[9px] font-bold text-blue-300">SW</span>
-                    <span className="truncate text-xs font-medium text-zinc-300">Durable generation</span>
-                    <span className="hidden text-xs text-zinc-400 sm:inline">/</span>
-                    <span className="hidden font-mono text-[11px] text-zinc-400 sm:inline">01arz3ndektsv4rrffq69g5fav</span>
+                    <span className="truncate text-xs font-medium text-zinc-300">Where Streamweld fits</span>
                   </div>
-                  <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] text-emerald-300"><i className="size-1.5 rounded-full bg-emerald-400" aria-hidden="true" />RESUMED</span>
+                  <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] text-emerald-300"><i className="size-1.5 rounded-full bg-emerald-400" aria-hidden="true" />ONE LOGICAL STREAM</span>
                 </div>
 
-                <div className="grid lg:grid-cols-[minmax(0,1fr)_360px]">
-                  <div className="min-w-0">
-                    <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3 sm:px-5">
-                      <span className="font-mono text-[11px] text-zinc-400">chat.completion.chunk</span>
-                      <span className="font-mono text-[10px] text-zinc-400">attempt 01 → 02</span>
+                <div className="p-4 sm:p-6 lg:p-8">
+                  <p className="max-w-3xl text-sm leading-6 text-zinc-400">Your application keeps the OpenAI HTTP + SSE contract. Streamweld adds the durable boundary; it is not another model server.</p>
+
+                  <div className="mt-6 grid items-stretch gap-3 lg:grid-cols-[1fr_auto_1.25fr_auto_1fr]">
+                    <div className="rounded-lg border border-white/[0.08] bg-black/20 p-4">
+                      <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-400">Client</span>
+                      <h3 className="mt-3 text-sm font-semibold text-zinc-100">Your application</h3>
+                      <p className="mt-2 text-xs leading-5 text-zinc-400">Sends a normal streaming chat-completion request and stores the returned stream ID + cursor.</p>
                     </div>
-                    <div className="overflow-x-auto py-5 font-mono text-[11px] leading-7 sm:py-7 sm:text-[13px]">
-                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] border-y border-blue-400/10 bg-blue-400/[0.025] px-3 text-zinc-400 sm:px-5"><span>event 0040</span><code>Roll out the new model pool only after</code></div>
-                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] px-3 text-zinc-400 sm:px-5"><span>event 0041</span><code>readiness and compatibility checks pass.</code></div>
-                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] border-y border-rose-400/10 bg-rose-400/[0.06] px-3 text-rose-200 sm:px-5"><span className="text-zinc-400">backend</span><code>pod terminated · attempt 01 closed</code></div>
-                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] border-b border-emerald-400/10 bg-emerald-400/[0.055] px-3 text-emerald-200 sm:px-5"><span className="text-zinc-400">resume</span><code>attempt 02 · cursor 0041 committed</code></div>
-                      <div className="grid min-w-[590px] grid-cols-[82px_1fr] px-3 text-zinc-400 sm:px-5"><span>event 0042</span><code>Then drain the old replicas gradually.</code></div>
+
+                    <div className="hidden items-center font-mono text-lg text-blue-300 lg:flex" aria-hidden="true">→</div>
+
+                    <div className="rounded-lg border border-blue-400/30 bg-blue-400/[0.055] p-4">
+                      <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.14em] text-blue-300">Durability layer</span>
+                      <h3 className="mt-3 text-sm font-semibold text-zinc-100">Streamweld proxy</h3>
+                      <p className="mt-2 text-xs leading-5 text-zinc-400">Assigns one logical identity, commits complete SSE events, and orchestrates backend attempts.</p>
+                      <div className="mt-4 rounded-md border border-white/[0.08] bg-black/25 px-3 py-2.5 font-mono text-[10px] text-zinc-400"><span className="text-emerald-300">Journal</span><span className="mx-2 text-zinc-700">·</span>event 40 → 41 → 42</div>
                     </div>
-                    <div className="border-t border-white/[0.07] bg-black/20 px-4 py-4 font-mono text-[11px] sm:px-5 sm:text-xs">
-                      <div className="flex gap-3"><span className="select-none text-blue-300">$</span><code className="text-zinc-300">streamweldctl streams 01arz3ndektsv4rrffq69g5fav</code></div>
-                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-zinc-400"><span><b className="font-medium text-emerald-300">complete</b> logical stream</span><span>2 attempts</span><span>43 committed events</span></div>
+
+                    <div className="hidden items-center font-mono text-lg text-blue-300 lg:flex" aria-hidden="true">→</div>
+
+                    <div className="rounded-lg border border-white/[0.08] bg-black/20 p-4">
+                      <span className="font-mono text-[9px] font-semibold uppercase tracking-[0.14em] text-zinc-400">Inference pool</span>
+                      <div className="mt-3 grid gap-2">
+                        <div className="flex items-center justify-between rounded border border-rose-400/15 bg-rose-400/[0.04] px-3 py-2 text-xs"><span className="text-zinc-400">Backend attempt 01</span><span className="font-mono text-rose-300">failed ×</span></div>
+                        <div className="flex items-center justify-between rounded border border-emerald-400/20 bg-emerald-400/[0.05] px-3 py-2 text-xs"><span className="text-zinc-300">Compatible attempt 02</span><span className="font-mono text-emerald-300">continues ✓</span></div>
+                      </div>
                     </div>
                   </div>
 
-                  <aside className="border-t border-white/[0.07] bg-[#0a0a0d] lg:border-l lg:border-t-0">
-                    <div className="flex h-12 items-center justify-between border-b border-white/[0.07] px-5"><span className="text-xs font-medium text-zinc-300">Stream state</span><span className="grid size-5 place-items-center rounded bg-white/[0.06] font-mono text-[10px] text-zinc-400">2</span></div>
-                    <div className="p-5">
-                      <div className="flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-wider"><span className="text-emerald-300">Complete</span><span className="text-zinc-700">/</span><span className="text-blue-300">SW001</span></div>
-                      <p className="mt-4 text-base font-semibold text-white">Reader resumed exactly</p>
-                      <p className="mt-2 text-sm leading-6 text-zinc-400">Replay continued strictly after event 0041 and rejoined the live tail.</p>
-                      <div className="mt-5 rounded-md border border-white/[0.07] bg-black/20">
-                        <div className="border-b border-white/[0.06] px-3 py-2 font-mono text-[9px] uppercase tracking-wider text-zinc-400">Cursor</div>
-                        <div className="space-y-2 px-3 py-3 font-mono text-[10px]"><code className="block text-zinc-400">last seen&nbsp;&nbsp;0041</code><code className="block text-emerald-300">next event 0042</code></div>
-                      </div>
-                      <div className="mt-5 border-l-2 border-blue-400/50 pl-3"><span className="font-mono text-[9px] uppercase tracking-wider text-zinc-400">Result</span><p className="mt-1.5 text-xs leading-5 text-zinc-400">No regenerated prompt, missing token, or duplicate event.</p></div>
-                    </div>
-                  </aside>
+                  <div className="mt-4 grid overflow-hidden rounded-lg border border-white/[0.08] bg-white/[0.07] md:grid-cols-3">
+                    <div className="bg-[#0a0a0d] p-4"><span className="font-mono text-[9px] text-rose-300">01 · FAILURE</span><p className="mt-2 text-xs leading-5 text-zinc-400">A reader disconnects or a backend attempt ends unexpectedly.</p></div>
+                    <div className="border-y border-white/[0.08] bg-[#0a0a0d] p-4 md:border-x md:border-y-0"><span className="font-mono text-[9px] text-blue-300">02 · RECOVERY</span><p className="mt-2 text-xs leading-5 text-zinc-400">The proxy replays committed events or moves production only after every safety gate passes.</p></div>
+                    <div className="bg-[#0a0a0d] p-4"><span className="font-mono text-[9px] text-emerald-300">03 · SAME RESPONSE</span><p className="mt-2 text-xs leading-5 text-zinc-400"><code className="text-zinc-300">Last-Event-ID: 41</code> starts at event 42, then rejoins the live tail.</p></div>
+                  </div>
                 </div>
               </figure>
             </div>

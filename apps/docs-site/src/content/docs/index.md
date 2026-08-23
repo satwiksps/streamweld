@@ -21,13 +21,19 @@ exact resume cursor.
     npm packages will be published with the first release.
 
 ```mermaid
-flowchart LR
-    Client[OpenAI-compatible client] -->|HTTP + SSE| Proxy[Streamweld proxy]
-    Proxy -->|request attempts| Backends[Self-hosted inference pool]
-    Proxy <--> Journal[(Memory or Redis journal)]
-    Operator[Kubernetes operator] -->|routes and drain state| Proxy
-    Client -.->|stream ID + cursor| Journal
+flowchart TB
+    App[Your application] -->|OpenAI HTTP + SSE| Proxy[Streamweld proxy]
+    Operator[Kubernetes operator] -->|eligible routes + drain state| Proxy
+    Proxy <--> |commit · replay · live tail| Journal[(Memory or Redis journal)]
+    Proxy -->|attempt 1| Origin[Backend A]
+    Origin -. unexpected failure .-> Proxy
+    Proxy -->|compatible continuation| Target[Backend B]
+    App -. stream ID + exact cursor .-> Proxy
 ```
+
+The application still speaks the OpenAI streaming API, and the inference
+servers still generate the response. Streamweld owns only the durable boundary
+between them: stream identity, ordered events, replay, and guarded continuation.
 
 ## What Streamweld provides
 

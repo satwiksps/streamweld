@@ -25,6 +25,44 @@ body {
   box-shadow: none;
 }
 
+/* Keep the docs identity deliberately typographic. The generated logo anchor
+   remains the home link, but only the project name is visible. */
+.md-header__button.md-logo,
+.md-nav__button.md-logo {
+  align-items: center;
+  display: inline-flex;
+  width: auto;
+}
+
+.md-header__button.md-logo svg,
+.md-header__button.md-logo img,
+.md-nav__button.md-logo svg,
+.md-nav__button.md-logo img {
+  display: none !important;
+}
+
+.md-header__button.md-logo::after,
+.md-nav__button.md-logo::after {
+  color: var(--md-primary-bg-color);
+  content: "Streamweld";
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.md-header__title {
+  display: none;
+}
+
+.md-nav__button.md-logo::after {
+  color: var(--md-default-fg-color);
+  font-size: 1rem;
+}
+
+.md-nav--primary > .md-nav__title {
+  font-size: 0;
+}
+
 .md-typeset h1,
 .md-typeset h2,
 .md-typeset h3 {

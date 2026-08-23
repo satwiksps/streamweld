@@ -1,22 +1,25 @@
-![Streamweld — durable streams for self-hosted inference](docs/assets/streamweld-banner.png)
+<h1 align="center">Streamweld</h1>
 
-# Streamweld
+<div align="center">
 
-[![CI](https://github.com/satwiksps/streamweld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/ci.yml)
-[![Documentation](https://github.com/satwiksps/streamweld/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/docs.yml)
-[![Security](https://github.com/satwiksps/streamweld/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/security.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Streamweld — one generation, exact resume](https://raw.githubusercontent.com/satwiksps/streamweld/main/docs/assets/streamweld.svg)
+
+Durable token streams for self-hosted LLM inference.
+
+[Website](https://streamweld.vercel.app/) | [Documentation](https://streamweld.readthedocs.io/en/latest/) | [Get started](https://streamweld.readthedocs.io/en/latest/getting-started/) | [Architecture](https://streamweld.readthedocs.io/en/latest/concepts/architecture/) | [Discussions](https://github.com/satwiksps/streamweld/discussions)
+
+[![CI](https://github.com/satwiksps/streamweld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/ci.yml?query=branch%3Amain)
+[![Documentation](https://readthedocs.org/projects/streamweld/badge/?version=latest)](https://streamweld.readthedocs.io/en/latest/)
+[![Security](https://github.com/satwiksps/streamweld/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/satwiksps/streamweld/actions/workflows/security.yml?query=branch%3Amain)
 [![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![License Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+</div>
 
 Streamweld is an OpenAI-compatible durability layer for self-hosted LLM
 inference. It gives each streaming generation an identity, an append-only
 journal, and an exact resume cursor that can outlive a reader connection or
 backend attempt.
-
-[Website](https://streamweld.vercel.app/) ·
-[Documentation](https://streamweld.readthedocs.io/en/latest/) ·
-[Getting started](https://streamweld.readthedocs.io/en/latest/getting-started/) ·
-[Discussions](https://github.com/satwiksps/streamweld/discussions)
 
 > [!IMPORTANT]
 > **Pre-release:** source, tests, documentation, and deterministic failure

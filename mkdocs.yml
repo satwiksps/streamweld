@@ -16,7 +16,6 @@ theme:
   language: en
   font: false
   icon:
-    logo: material/source-branch
     repo: fontawesome/brands/github
   palette:
     - media: "(prefers-color-scheme: dark)"
