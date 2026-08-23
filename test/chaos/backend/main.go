@@ -60,7 +60,7 @@ func run() int {
 	}
 	server := &http.Server{
 		Addr:              settings.listen,
-		Handler:           newHandler(settings, logger),
+		Handler:           newHandler(settings),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
@@ -116,7 +116,7 @@ func configFromEnv() (config, error) {
 	return settings, nil
 }
 
-func newHandler(settings config, logger *slog.Logger) http.Handler {
+func newHandler(settings config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
@@ -128,12 +128,12 @@ func newHandler(settings config, logger *slog.Logger) http.Handler {
 		})
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(writer http.ResponseWriter, request *http.Request) {
-		handleCompletion(writer, request, settings, logger)
+		handleCompletion(writer, request, settings)
 	})
 	return mux
 }
 
-func handleCompletion(writer http.ResponseWriter, request *http.Request, settings config, logger *slog.Logger) {
+func handleCompletion(writer http.ResponseWriter, request *http.Request, settings config) {
 	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBytes+1))
 	var completion completionRequest
 	if err := decoder.Decode(&completion); err != nil {
@@ -225,8 +225,6 @@ func handleCompletion(writer http.ResponseWriter, request *http.Request, setting
 	})
 	_, _ = io.WriteString(writer, "data: [DONE]\n\n")
 	flush(writer)
-	logger.DebugContext(request.Context(), "deterministic generation completed",
-		"start", start, "tokens", limit)
 }
 
 func continuationStart(messages []message) int {

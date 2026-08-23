@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +12,7 @@ import (
 func TestBackendOOMFailsOnlyTheOriginalAttempt(t *testing.T) {
 	t.Parallel()
 
-	handler := newHandler(config{defaultTokens: 12}, slog.New(slog.DiscardHandler))
+	handler := newHandler(config{defaultTokens: 12})
 	original := performCompletion(t, handler, `{
 		"model":"streamweld/deterministic-chaos",
 		"messages":[{"role":"user","content":"streamweld-chaos:backend-oom:0"}],
