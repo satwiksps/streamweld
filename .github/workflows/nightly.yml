@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
@@ -28,7 +28,7 @@ jobs:
       - uses: helm/kind-action@v1.14.0
         with:
           install_only: true
-      - uses: azure/setup-helm@v4.3.1
+      - uses: azure/setup-helm@v5.0.1
         with:
           version: v4.0.0
       - run: make chaos GO_TEST_FLAGS=-race
