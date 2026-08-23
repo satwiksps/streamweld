@@ -445,14 +445,8 @@ func finishRemoteStream(
 	if scenario == ScenarioClientDrop {
 		_ = stream.response.Body.Close()
 		stream.response = nil
-		timer := time.NewTimer(clientReconnectDelay)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return ctx.Err()
+		if err := waitRemoteReconnect(ctx, clientReconnectDelay); err != nil {
+			return err
 		}
 		if err := stream.resume(ctx, client, proxyURL); err != nil {
 			return err
@@ -477,26 +471,50 @@ func finishRemoteStream(
 		}
 	}
 
-	for attempts := 0; stream.terminal == ""; attempts++ {
+	resumeAttempts := 0
+	connectionSawFrame := false
+	for stream.terminal == "" {
 		event, err := stream.decoder.Decode()
 		if err == nil {
+			connectionSawFrame = true
 			if acceptErr := stream.accept(event); acceptErr != nil {
 				return acceptErr
 			}
 			continue
 		}
-		if attempts >= 3 {
-			return fmt.Errorf("stream %s ended without terminal after resume attempts: %w", stream.id, err)
+		if connectionSawFrame {
+			// Match the SDK's consecutive-failure accounting: a connection that
+			// advances the event stream restores the full reconnect budget.
+			resumeAttempts = 0
+		}
+		if resumeAttempts >= 3 {
+			return fmt.Errorf("stream %s ended without terminal after %d resume attempts: %w", stream.id, resumeAttempts, err)
 		}
 		if stream.response != nil {
 			_ = stream.response.Body.Close()
 			stream.response = nil
 		}
-		if err := stream.resume(ctx, client, proxyURL); err != nil {
+		if err := waitRemoteReconnect(ctx, clientReconnectDelay); err != nil {
 			return err
 		}
+		resumeAttempts++
+		if err := stream.resume(ctx, client, proxyURL); err != nil {
+			return fmt.Errorf("resume stream %s attempt %d: %w", stream.id, resumeAttempts, err)
+		}
+		connectionSawFrame = false
 	}
 	return nil
+}
+
+func waitRemoteReconnect(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (stream *attachedStream) resume(ctx context.Context, client *http.Client, proxyURL string) error {
