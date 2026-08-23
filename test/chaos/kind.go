@@ -262,7 +262,6 @@ func (injector *KindInjector) waitRouteBackends(ctx context.Context, count int) 
 func (injector *KindInjector) soleLiveBackendPod(ctx context.Context) (string, error) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	lastState := "no Pod list observed"
 	for {
 		output, err := injector.run(ctx, "get", "pods", "--namespace", injector.config.Namespace,
 			"--selector", injector.config.BackendSelector,
@@ -308,10 +307,10 @@ func (injector *KindInjector) soleLiveBackendPod(ctx context.Context) (string, e
 			}
 			return readyPods[0], nil
 		}
-		lastState = fmt.Sprintf("%d non-terminating and %d Ready", len(livePods), len(readyPods))
+		state := fmt.Sprintf("%d non-terminating and %d Ready", len(livePods), len(readyPods))
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("wait for exactly one live Ready backend Pod (%s): %w", lastState, ctx.Err())
+			return "", fmt.Errorf("wait for exactly one live Ready backend Pod (%s): %w", state, ctx.Err())
 		case <-ticker.C:
 		}
 	}
