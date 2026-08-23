@@ -8,6 +8,7 @@ allowBuilds:
 overrides:
   '@ai-sdk/provider-utils>undici': 6.28.0
   astro>sharp: 0.35.3
+  esbuild: 0.28.2
 minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@2.0.139'
   - ai@5.0.244
