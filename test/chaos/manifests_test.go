@@ -122,3 +122,35 @@ func TestKindRunnerDoesNotRequireOptionalWorkerRoleLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestKindRunnerPreservesFailureDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	runner, err := os.ReadFile("run-kind.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerText := strings.ReplaceAll(string(runner), "\r\n", "\n")
+	for _, required := range []string{
+		"collect_failure_diagnostics",
+		"capture_kubectl resources.txt get all --namespace streamweld-system -o wide",
+		"capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp",
+		"capture_component_logs proxy app.kubernetes.io/component=proxy",
+		"capture_component_logs operator app.kubernetes.io/component=operator",
+		"capture_component_logs backend app.kubernetes.io/name=streamweld-chaos-backend",
+		"capture_component_logs redis app.kubernetes.io/component=redis",
+		"if (( status != 0 )); then\n    collect_failure_diagnostics\n  fi\n  cleanup\n  exit \"$status\"",
+	} {
+		if !strings.Contains(runnerText, required) {
+			t.Errorf("kind runner is missing failure-diagnostic contract %q", required)
+		}
+	}
+
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "nightly.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workflow), "${{ runner.temp }}/streamweld-kind-results/diagnostics") {
+		t.Fatal("nightly workflow does not upload kind failure diagnostics")
+	}
+}

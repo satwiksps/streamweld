@@ -47,4 +47,5 @@ jobs:
             benchmarks/results.json
             ${{ runner.temp }}/streamweld-kind-results/results.md
             ${{ runner.temp }}/streamweld-kind-results/results.json
+            ${{ runner.temp }}/streamweld-kind-results/diagnostics
           if-no-files-found: error

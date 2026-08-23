@@ -11,23 +11,74 @@ for command in docker kind kubectl helm go curl; do
   }
 done
 
+forward_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/streamweld-chaos"
+results_dir="${STREAMWELD_CHAOS_RESULTS_DIR:-$forward_dir/results}"
+diagnostics_dir="$results_dir/diagnostics"
 cluster_name="${KIND_CLUSTER_NAME:-}"
 created_cluster=false
-current_context="$(kubectl config current-context 2>/dev/null || true)"
-if [[ -z "$cluster_name" && "$current_context" == kind-* ]] && kubectl cluster-info >/dev/null 2>&1; then
-  cluster_name="${current_context#kind-}"
-else
-  cluster_name="${cluster_name:-streamweld-chaos}"
-  if kind get clusters 2>/dev/null | grep -Fxq "$cluster_name"; then
-    kubectl config use-context "kind-$cluster_name" >/dev/null
-  else
-    kind create cluster --name "$cluster_name" --config test/chaos/kind-config.yaml --wait 120s
-    created_cluster=true
-  fi
-fi
-
 proxy_forward_pid=""
 backend_forward_pid=""
+
+capture_kubectl() {
+  local output_file="$1"
+  shift
+  kubectl --request-timeout=15s "$@" >"$diagnostics_dir/$output_file" 2>&1 || true
+}
+
+capture_component_logs() {
+  local component="$1"
+  local selector="$2"
+  capture_kubectl "$component.log" logs \
+    --namespace streamweld-system \
+    --selector "$selector" \
+    --all-containers=true \
+    --prefix=true \
+    --tail=-1
+  capture_kubectl "$component-previous.log" logs \
+    --namespace streamweld-system \
+    --selector "$selector" \
+    --all-containers=true \
+    --prefix=true \
+    --tail=-1 \
+    --previous
+}
+
+collect_failure_diagnostics() {
+  mkdir -p "$diagnostics_dir"
+  echo "kind chaos failed; collecting diagnostics in $diagnostics_dir" >&2
+
+  {
+    date --utc --iso-8601=seconds
+    echo "cluster: ${cluster_name:-unknown}"
+    echo "context: $(kubectl config current-context 2>/dev/null || echo unavailable)"
+    kind get clusters 2>&1 || true
+  } >"$diagnostics_dir/context.txt"
+
+  capture_kubectl nodes.txt get nodes -o wide
+  capture_kubectl pods-all-namespaces.txt get pods --all-namespaces -o wide
+  capture_kubectl resources.txt get all --namespace streamweld-system -o wide
+  capture_kubectl pods.yaml get pods --namespace streamweld-system -o yaml
+  capture_kubectl pod-descriptions.txt describe pods --namespace streamweld-system
+  capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp
+  capture_kubectl inferenceroutes.yaml get inferenceroutes.streamweld.io --namespace streamweld-system -o yaml
+  capture_kubectl durabilitypolicies.yaml get durabilitypolicies.streamweld.io --namespace streamweld-system -o yaml
+
+  helm status streamweld \
+    --namespace streamweld-system \
+    --kube-apiserver-timeout 15s \
+    >"$diagnostics_dir/helm-status.txt" 2>&1 || true
+  capture_component_logs proxy app.kubernetes.io/component=proxy
+  capture_component_logs operator app.kubernetes.io/component=operator
+  capture_component_logs backend app.kubernetes.io/name=streamweld-chaos-backend
+  capture_component_logs redis app.kubernetes.io/component=redis
+
+  for name in proxy backend; do
+    if [[ -f "$forward_dir/$name.log" ]]; then
+      cp "$forward_dir/$name.log" "$diagnostics_dir/port-forward-$name.log"
+    fi
+  done
+}
+
 cleanup() {
   for pid in "$proxy_forward_pid" "$backend_forward_pid"; do
     if [[ -n "$pid" ]]; then
@@ -39,7 +90,31 @@ cleanup() {
     kind delete cluster --name "$cluster_name"
   fi
 }
-trap cleanup EXIT
+
+on_exit() {
+  local status=$?
+  trap - EXIT
+  set +e
+  if (( status != 0 )); then
+    collect_failure_diagnostics
+  fi
+  cleanup
+  exit "$status"
+}
+trap on_exit EXIT
+
+current_context="$(kubectl config current-context 2>/dev/null || true)"
+if [[ -z "$cluster_name" && "$current_context" == kind-* ]] && kubectl cluster-info >/dev/null 2>&1; then
+  cluster_name="${current_context#kind-}"
+else
+  cluster_name="${cluster_name:-streamweld-chaos}"
+  if kind get clusters 2>/dev/null | grep -Fxq "$cluster_name"; then
+    kubectl config use-context "kind-$cluster_name" >/dev/null
+  else
+    created_cluster=true
+    kind create cluster --name "$cluster_name" --config test/chaos/kind-config.yaml --wait 120s
+  fi
+fi
 
 # kubeadm (and therefore kind) does not guarantee a positive worker-role label.
 # Identify workers by excluding both current and legacy control-plane labels.
@@ -100,7 +175,6 @@ kubectl wait inferenceroute/deterministic-chaos \
   --for=jsonpath='{.status.healthyBackends}'=2 \
   --timeout=180s
 
-forward_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/streamweld-chaos"
 mkdir -p "$forward_dir"
 kubectl port-forward --namespace streamweld-system service/streamweld-proxy 18080:8080 >"$forward_dir/proxy.log" 2>&1 &
 proxy_forward_pid=$!
@@ -120,7 +194,6 @@ done
 curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null
 curl --fail --silent http://127.0.0.1:18081/health >/dev/null
 
-results_dir="${STREAMWELD_CHAOS_RESULTS_DIR:-$forward_dir/results}"
 go run ./cmd/streamweldctl bench \
   --profile kind \
   --proxy-url http://127.0.0.1:18080 \
