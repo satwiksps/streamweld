@@ -52,6 +52,7 @@ type KindConfig struct {
 	BackendContainer  string
 	BackendSelector   string
 	RedisDeployment   string
+	RedisService      string
 	InferenceRoute    string
 	StableImage       string
 	RolloutImage      string
@@ -71,13 +72,16 @@ func NewKindInjector(config KindConfig, runner CommandRunner) (*KindInjector, er
 	if config.CommandTimeout == 0 {
 		config.CommandTimeout = 2 * time.Minute
 	}
+	if config.RedisService == "" {
+		config.RedisService = config.RedisDeployment
+	}
 	if config.CommandTimeout <= 0 {
 		return nil, errors.New("kind command timeout must be positive")
 	}
 	identities := map[string]string{
 		"namespace": config.Namespace, "backend deployment": config.BackendDeployment,
 		"backend container": config.BackendContainer, "redis deployment": config.RedisDeployment,
-		"inference route": config.InferenceRoute,
+		"redis service": config.RedisService, "inference route": config.InferenceRoute,
 	}
 	for name, value := range identities {
 		if !kubernetesName.MatchString(value) {
@@ -230,6 +234,8 @@ func (injector *KindInjector) Restore(ctx context.Context, scenario Scenario) er
 		} else if _, err := injector.run(ctx, "rollout", "status", "deployment/"+injector.config.RedisDeployment,
 			"--namespace", injector.config.Namespace, "--timeout=120s"); err != nil {
 			restoreErrors = append(restoreErrors, err)
+		} else if err := injector.waitRedisService(ctx); err != nil {
+			restoreErrors = append(restoreErrors, err)
 		}
 	}
 	if scenario == ScenarioRollingUpdate {
@@ -295,6 +301,36 @@ func (injector *KindInjector) waitRouteBackends(ctx context.Context, count int) 
 		"--namespace", injector.config.Namespace,
 		fmt.Sprintf("--for=jsonpath={.status.healthyBackends}=%d", count), "--timeout=120s")
 	return err
+}
+
+func (injector *KindInjector) waitRedisService(ctx context.Context) error {
+	// A Deployment can report available before kind's Service route has
+	// converged. Probe the Service hostname so the next scenario cannot race
+	// kube-proxy and accidentally enter the intentional degraded path.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		output, err := injector.run(
+			ctx,
+			"exec", "deployment/"+injector.config.RedisDeployment,
+			"--namespace", injector.config.Namespace,
+			"--", "redis-cli", "--raw", "-h", injector.config.RedisService, "PING",
+		)
+		if err == nil && output == "PONG" {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("redis-cli returned %q", output)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for Redis Service data path: %w", errors.Join(ctx.Err(), lastErr))
+		case <-ticker.C:
+		}
+	}
 }
 
 func (injector *KindInjector) soleLiveBackendPod(ctx context.Context) (string, error) {

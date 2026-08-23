@@ -100,6 +100,7 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 			BackendContainer:  "backend",
 			BackendSelector:   "app.kubernetes.io/name=streamweld-chaos-backend",
 			RedisDeployment:   "streamweld-redis",
+			RedisService:      "streamweld-redis",
 			InferenceRoute:    "deterministic-chaos",
 			StableImage:       *stableImage,
 			RolloutImage:      *rolloutImage,
