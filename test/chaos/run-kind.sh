@@ -188,7 +188,7 @@ if [[ ! "$proxy_node_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
   exit 1
 fi
 proxy_url="http://${proxy_node_ip}:30080"
-kind_gateway="$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' kind)"
+kind_gateway="$(docker inspect --format '{{(index .NetworkSettings.Networks "kind").Gateway}}' "$proxy_node")"
 if [[ ! "$kind_gateway" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
   echo "cannot determine the kind Docker bridge IPv4 gateway: $kind_gateway" >&2
   exit 1

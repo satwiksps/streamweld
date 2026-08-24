@@ -113,7 +113,7 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 		`proxy_node="${worker_nodes[2]#node/}"`,
 		`kubectl get node "$proxy_node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'`,
 		`proxy_url="http://${proxy_node_ip}:30080"`,
-		`kind_gateway="$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' kind)"`,
+		`kind_gateway="$(docker inspect --format '{{(index .NetworkSettings.Networks "kind").Gateway}}' "$proxy_node")"`,
 		`kind_gateway_cidr="${kind_gateway}/32"`,
 		`sed "s|__KIND_GATEWAY_CIDR__|${kind_gateway_cidr}|"`,
 		`--proxy-url "$proxy_url"`,
