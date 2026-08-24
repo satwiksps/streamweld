@@ -135,9 +135,9 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 	}
 	for _, required := range []string{
 		`basicConstraints=critical,CA:FALSE`,
-		`subjectAltName=DNS:*.streamweld-relay.streamweld-system.svc`,
+		`subjectAltName=DNS:streamweld-relay.streamweld-system.svc`,
 		`extendedKeyUsage=serverAuth,clientAuth`,
-		`-verify_hostname fixture.streamweld-relay.streamweld-system.svc`,
+		`-verify_hostname streamweld-relay.streamweld-system.svc`,
 		"kubectl create secret generic streamweld-chaos-relay-tls",
 		"--set relay.enabled=true",
 		"--set relay.tls.existingSecret=streamweld-chaos-relay-tls",

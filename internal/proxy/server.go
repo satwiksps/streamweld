@@ -276,10 +276,19 @@ func NewServer(config Config, logger *slog.Logger, options ...Option) (*Server, 
 		return nil, fmt.Errorf("create route backend registry: %w", err)
 	}
 	directory, _ := settings.journal.(journal.OwnerDirectory)
+	relayAdvertiseURL, err := config.relayAdvertiseURL()
+	if err != nil {
+		forceCancel()
+		if journalClose != nil {
+			_ = journalClose()
+		}
+		return nil, fmt.Errorf("resolve owner relay advertise URL: %w", err)
+	}
 	relay, err := newRelayCoordinator(relayConfig{
 		ReplicaID:        config.ReplicaID,
 		ListenAddress:    config.RelayListenAddress,
-		AdvertiseURL:     config.RelayAdvertiseURL,
+		AdvertiseURL:     relayAdvertiseURL,
+		TLSServerName:    config.RelayTLSServerName,
 		CAFile:           config.RelayCAFile,
 		CertificateFile:  config.RelayCertificateFile,
 		PrivateKeyFile:   config.RelayPrivateKeyFile,

@@ -98,6 +98,8 @@ type Config struct {
 	ReplicaID                     string
 	RelayListenAddress            string
 	RelayAdvertiseURL             string
+	RelayAdvertiseHost            string
+	RelayTLSServerName            string
 	RelayCAFile                   string
 	RelayCertificateFile          string
 	RelayPrivateKeyFile           string
@@ -192,6 +194,12 @@ func ConfigFromEnv(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookup("STREAMWELD_RELAY_ADVERTISE_URL"); ok {
 		cfg.RelayAdvertiseURL = value
+	}
+	if value, ok := lookup("STREAMWELD_RELAY_ADVERTISE_HOST"); ok {
+		cfg.RelayAdvertiseHost = value
+	}
+	if value, ok := lookup("STREAMWELD_RELAY_TLS_SERVER_NAME"); ok {
+		cfg.RelayTLSServerName = value
 	}
 	if value, ok := lookup("STREAMWELD_RELAY_CA_FILE"); ok {
 		cfg.RelayCAFile = value
@@ -417,6 +425,24 @@ func (c Config) Validate() error {
 	return errors.Join(problems...)
 }
 
+func (c Config) relayAdvertiseURL() (string, error) {
+	if c.RelayAdvertiseURL != "" && c.RelayAdvertiseHost != "" {
+		return "", errors.New("relay advertise URL and host are mutually exclusive")
+	}
+	if c.RelayAdvertiseHost == "" {
+		return c.RelayAdvertiseURL, nil
+	}
+	host := c.RelayAdvertiseHost
+	if !validRelayHost(host) {
+		return "", errors.New("relay advertise host must be an unbracketed hostname or IP address")
+	}
+	_, port, err := net.SplitHostPort(c.RelayListenAddress)
+	if err != nil {
+		return "", fmt.Errorf("relay listen address: %w", err)
+	}
+	return (&url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}).String(), nil
+}
+
 func (c Config) validateRelay() error {
 	if strings.TrimSpace(c.RelayListenAddress) == "" {
 		return errors.New("relay listen address is required")
@@ -427,9 +453,16 @@ func (c Config) validateRelay() error {
 	if c.RelayPresenceTTL <= 2*c.RelayHeartbeatInterval {
 		return errors.New("relay presence TTL must exceed twice the heartbeat interval")
 	}
-	if c.RelayAdvertiseURL == "" {
+	advertiseURL, err := c.relayAdvertiseURL()
+	if err != nil {
+		return err
+	}
+	if advertiseURL == "" {
 		if c.RelayInsecureDevMode {
 			return errors.New("relay insecure development mode requires an advertise URL")
+		}
+		if c.RelayTLSServerName != "" {
+			return errors.New("relay TLS server name requires an advertise URL or host")
 		}
 		return nil
 	}
@@ -440,13 +473,16 @@ func (c Config) validateRelay() error {
 	if replicaID == "" {
 		replicaID = "generated-at-startup"
 	}
-	owner := journal.OwnerRecord{ReplicaID: replicaID, RelayURL: c.RelayAdvertiseURL}
+	owner := journal.OwnerRecord{ReplicaID: replicaID, RelayURL: advertiseURL}
 	if err := owner.Validate(); err != nil {
 		return fmt.Errorf("owner relay: %w", err)
 	}
-	advertise, _ := url.Parse(c.RelayAdvertiseURL)
+	advertise, _ := url.Parse(advertiseURL)
 	listenHost, _, _ := net.SplitHostPort(c.RelayListenAddress)
 	if c.RelayInsecureDevMode {
+		if c.RelayTLSServerName != "" {
+			return errors.New("relay TLS server name is not valid in insecure development mode")
+		}
 		if advertise.Scheme != "http" {
 			return errors.New("insecure development relay advertise URL must use http")
 		}
@@ -457,6 +493,9 @@ func (c Config) validateRelay() error {
 	}
 	if advertise.Scheme != "https" {
 		return errors.New("production relay advertise URL must use https")
+	}
+	if c.RelayTLSServerName != "" && !validRelayHost(c.RelayTLSServerName) {
+		return errors.New("relay TLS server name must be a hostname or IP address without whitespace or a path")
 	}
 	missing := make([]string, 0, 3)
 	for name, value := range map[string]string{
@@ -471,6 +510,13 @@ func (c Config) validateRelay() error {
 		return fmt.Errorf("production relay requires %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func validRelayHost(host string) bool {
+	if strings.TrimSpace(host) != host || strings.ContainsAny(host, " \t\r\n\x00/\\[]@?#*") {
+		return false
+	}
+	return !strings.Contains(host, ":") || net.ParseIP(host) != nil
 }
 
 func isLoopbackRelayHost(host string) bool {

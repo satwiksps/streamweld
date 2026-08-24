@@ -32,6 +32,8 @@ func TestRelayConfigRequiresMTLSOrExplicitLoopbackDevelopmentMode(t *testing.T) 
 		{"memory journal", func(config *Config) { config.JournalBackend = JournalBackendMemory }, "requires the Redis"},
 		{"invalid replica", func(config *Config) { config.ReplicaID = "replica a" }, "replica ID"},
 		{"short presence", func(config *Config) { config.RelayPresenceTTL = 2 * config.RelayHeartbeatInterval }, "must exceed twice"},
+		{"advertise URL and host", func(config *Config) { config.RelayAdvertiseHost = "127.0.0.1" }, "mutually exclusive"},
+		{"TLS name in development", func(config *Config) { config.RelayTLSServerName = "relay.example.test" }, "insecure development mode"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -45,15 +47,21 @@ func TestRelayConfigRequiresMTLSOrExplicitLoopbackDevelopmentMode(t *testing.T) 
 
 	production := base
 	production.RelayInsecureDevMode = false
-	production.RelayAdvertiseURL = "https://relay-a.internal:8443"
+	production.RelayAdvertiseURL = ""
+	production.RelayAdvertiseHost = "10.42.1.17"
 	if err := production.Validate(); err == nil || !strings.Contains(err.Error(), "production relay requires") {
 		t.Fatalf("production config without mTLS material error = %v", err)
 	}
 	production.RelayCAFile = "ca.pem"
 	production.RelayCertificateFile = "tls.crt"
 	production.RelayPrivateKeyFile = "tls.key"
+	production.RelayTLSServerName = "streamweld-relay.example.test"
 	if err := production.Validate(); err != nil {
 		t.Fatalf("production mTLS config rejected before file loading: %v", err)
+	}
+	production.RelayTLSServerName = "https://streamweld-relay.example.test"
+	if err := production.Validate(); err == nil || !strings.Contains(err.Error(), "TLS server name") {
+		t.Fatalf("production URL-shaped TLS server name error = %v", err)
 	}
 }
 
@@ -81,5 +89,46 @@ func TestConfigFromEnvLoadsRelaySettings(t *testing.T) {
 	}
 	if config.RelayCAFile != "relay-ca.pem" || config.RelayCertificateFile != "relay.crt" || config.RelayPrivateKeyFile != "relay.key" {
 		t.Fatalf("relay mTLS paths not applied: %+v", config)
+	}
+}
+
+func TestRelayAdvertiseHostBuildsIPFamilySafeURL(t *testing.T) {
+	t.Parallel()
+
+	environmentConfig, err := ConfigFromEnv(mapLookup(map[string]string{
+		"STREAMWELD_RELAY_ADVERTISE_HOST":  "10.42.1.17",
+		"STREAMWELD_RELAY_TLS_SERVER_NAME": "relay.example.test",
+	}))
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if environmentConfig.RelayAdvertiseHost != "10.42.1.17" || environmentConfig.RelayTLSServerName != "relay.example.test" {
+		t.Fatalf("relay host environment settings not applied: %+v", environmentConfig)
+	}
+
+	for _, test := range []struct {
+		host string
+		want string
+	}{
+		{host: "10.42.1.17", want: "https://10.42.1.17:8081"},
+		{host: "fd00::17", want: "https://[fd00::17]:8081"},
+	} {
+		config := DefaultConfig()
+		config.RelayListenAddress = "0.0.0.0:8081"
+		config.RelayAdvertiseHost = test.host
+		got, err := config.relayAdvertiseURL()
+		if err != nil {
+			t.Fatalf("relayAdvertiseURL(%q) error = %v", test.host, err)
+		}
+		if got != test.want {
+			t.Errorf("relayAdvertiseURL(%q) = %q, want %q", test.host, got, test.want)
+		}
+	}
+
+	config := DefaultConfig()
+	config.RelayAdvertiseURL = "https://relay.example.test:8081"
+	config.RelayAdvertiseHost = "10.42.1.17"
+	if _, err := config.relayAdvertiseURL(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("URL and host conflict error = %v", err)
 	}
 }

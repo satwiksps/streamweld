@@ -220,10 +220,10 @@ openssl req -x509 -newkey rsa:2048 -nodes \
 openssl req -newkey rsa:2048 -nodes \
   -keyout "$relay_tls_dir/tls.key" \
   -out "$relay_tls_dir/tls.csr" \
-  -subj "/CN=*.streamweld-relay.streamweld-system.svc" \
+  -subj "/CN=streamweld-relay.streamweld-system.svc" \
   -sha256 \
   -addext "basicConstraints=critical,CA:FALSE" \
-  -addext "subjectAltName=DNS:*.streamweld-relay.streamweld-system.svc" \
+  -addext "subjectAltName=DNS:streamweld-relay.streamweld-system.svc" \
   -addext "extendedKeyUsage=serverAuth,clientAuth" \
   -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
   >/dev/null 2>&1
@@ -240,7 +240,7 @@ openssl x509 -req \
 openssl verify \
   -CAfile "$relay_tls_dir/ca.crt" \
   -purpose sslserver \
-  -verify_hostname fixture.streamweld-relay.streamweld-system.svc \
+  -verify_hostname streamweld-relay.streamweld-system.svc \
   "$relay_tls_dir/tls.crt"
 openssl verify -CAfile "$relay_tls_dir/ca.crt" -purpose sslclient "$relay_tls_dir/tls.crt"
 kubectl create secret generic streamweld-chaos-relay-tls \

@@ -33,9 +33,6 @@ spec:
         {{- end }}
     spec:
       automountServiceAccountToken: false
-      {{- if .Values.relay.enabled }}
-      subdomain: {{ include "streamweld.relayName" . }}
-      {{- end }}
       terminationGracePeriodSeconds: {{ .Values.proxy.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -53,16 +50,10 @@ spec:
             - configMapRef:
                 name: {{ include "streamweld.proxyName" . }}
           env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: STREAMWELD_REPLICA_ID
-              value: "$(POD_NAME)"
             {{- if eq .Values.journal.backend "redis" }}
             - name: STREAMWELD_REDIS_URL
               valueFrom:
@@ -71,8 +62,14 @@ spec:
                   key: {{ .Values.journal.redis.secretKey }}
             {{- end }}
             {{- if .Values.relay.enabled }}
-            - name: STREAMWELD_RELAY_ADVERTISE_URL
-              value: {{ printf "https://$(POD_NAME).%s.$(POD_NAMESPACE).svc:%d" (include "streamweld.relayName" .) (int .Values.relay.port) | quote }}
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: STREAMWELD_RELAY_ADVERTISE_HOST
+              value: "$(POD_IP)"
+            - name: STREAMWELD_RELAY_TLS_SERVER_NAME
+              value: {{ printf "%s.$(POD_NAMESPACE).svc" (include "streamweld.relayName" .) | quote }}
             {{- end }}
             {{- with .Values.proxy.extraEnv }}
             {{- toYaml . | nindent 12 }}

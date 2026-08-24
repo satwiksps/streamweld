@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -454,6 +457,89 @@ func TestRelayResponseHeaderWaitIsBounded(t *testing.T) {
 		t.Fatalf("ResponseHeaderTimeout = %s, want %s", transport.ResponseHeaderTimeout, config.HandshakeTimeout)
 	}
 	transport.CloseIdleConnections()
+}
+
+func TestRelayOperationURLSupportsPodIPFamilies(t *testing.T) {
+	t.Parallel()
+	id := mustRelayStreamID(t)
+	for _, base := range []string{"https://10.42.1.17:8081", "https://[fd00::17]:8081"} {
+		got, err := relayOperationURL(base, id, "stop")
+		if err != nil {
+			t.Fatalf("relayOperationURL(%q) error = %v", base, err)
+		}
+		want := base + relayEventsPrefix + id.String() + "/stop"
+		if got != want {
+			t.Errorf("relayOperationURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+}
+
+func TestRelayTLSUsesConfiguredServerName(t *testing.T) {
+	t.Parallel()
+
+	fixture := httptest.NewTLSServer(http.NotFoundHandler())
+	defer fixture.Close()
+	pair := fixture.TLS.Certificates[0]
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]})
+	privateKeyDER, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
+	if err != nil {
+		t.Fatalf("marshal fixture private key: %v", err)
+	}
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKeyDER})
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse fixture certificate: %v", err)
+	}
+	if len(leaf.DNSNames) == 0 {
+		t.Fatal("TLS fixture certificate has no DNS identity")
+	}
+	directory := t.TempDir()
+	caPath := filepath.Join(directory, "ca.crt")
+	certificatePath := filepath.Join(directory, "tls.crt")
+	privateKeyPath := filepath.Join(directory, "tls.key")
+	for path, contents := range map[string][]byte{
+		caPath: certificatePEM, certificatePath: certificatePEM, privateKeyPath: privateKeyPEM,
+	} {
+		if err := os.WriteFile(path, contents, 0o600); err != nil {
+			t.Fatalf("write relay TLS fixture: %v", err)
+		}
+	}
+
+	serverName := leaf.DNSNames[0]
+	serverTLS, transport, err := buildRelayTLS(relayConfig{
+		CAFile: caPath, CertificateFile: certificatePath, PrivateKeyFile: privateKeyPath,
+		TLSServerName: serverName, DialTimeout: time.Second, HandshakeTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("buildRelayTLS() error = %v", err)
+	}
+	if serverTLS == nil || transport.TLSClientConfig == nil {
+		t.Fatal("buildRelayTLS() omitted production TLS configuration")
+	}
+	if got := transport.TLSClientConfig.ServerName; got != serverName {
+		t.Fatalf("relay TLS ServerName = %q, want %q", got, serverName)
+	}
+	response, err := (&http.Client{Transport: transport}).Get(fixture.URL)
+	if err != nil {
+		t.Fatalf("relay TLS handshake through IP with server name %q: %v", serverName, err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close relay TLS fixture response: %v", err)
+	}
+	transport.CloseIdleConnections()
+
+	_, wrongNameTransport, err := buildRelayTLS(relayConfig{
+		CAFile: caPath, CertificateFile: certificatePath, PrivateKeyFile: privateKeyPath,
+		TLSServerName: "wrong.example.test", DialTimeout: time.Second, HandshakeTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("buildRelayTLS() with wrong name error = %v", err)
+	}
+	if response, err := (&http.Client{Transport: wrongNameTransport}).Get(fixture.URL); err == nil {
+		_ = response.Body.Close()
+		t.Fatal("relay TLS handshake accepted a certificate for the wrong server name")
+	}
+	wrongNameTransport.CloseIdleConnections()
 }
 
 func TestRelayTLSVerificationGate(t *testing.T) {

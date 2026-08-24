@@ -34,12 +34,17 @@ journal is `memory`. For production, prefer an externally managed Redis and
 provide its URL through `journal.redis.existingSecret`; the selected key is
 `journal.redis.secretKey` (`redis-url` by default).
 
-The owner relay is off by default. When enabled, each Deployment pod advertises
-its pod-specific name beneath the relay headless Service. Supply
-`relay.tls.existingSecret` with `ca.crt`, `tls.crt`, and `tls.key`; certificates
-must cover the per-pod wildcard
-`*.<release>-streamweld-relay.<namespace>.svc`. Relay ingress is restricted to
-the release's proxy pods. Public/admin HTTP and the unauthenticated backend
+The owner relay is off by default. When enabled, each proxy advertises its Pod
+IP and verifies peers against the release's relay Service identity. Supply
+`relay.tls.existingSecret` with `ca.crt`, `tls.crt`, and `tls.key`; the shared
+certificate must cover
+the rendered `<fullname>-relay.<namespace>.svc` Service DNS name (for the
+documented install, `streamweld-relay.streamweld-system.svc`). The process
+generates a new replica identity on every start so a restarted container cannot
+renew stale ownership. The Service name is a TLS identity, not the owner route;
+relay traffic goes directly to the advertised Pod IP. Relay ingress is
+restricted to the release's proxy pods.
+Public/admin HTTP and the unauthenticated backend
 drain hook are namespace-restricted by default; add an ingress-controller
 namespace label map under `relay.networkPolicy.publicIngressNamespaceSelector`
 when traffic enters from another namespace.
