@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-for command in docker kind kubectl helm go curl timeout uname; do
+for command in docker kind kubectl helm go curl sed timeout uname; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required kind-chaos command is missing: $command" >&2
     exit 1
@@ -58,6 +58,7 @@ collect_failure_diagnostics() {
   capture_kubectl resources.txt get all --namespace streamweld-system -o wide
   capture_kubectl services.yaml get services --namespace streamweld-system -o yaml
   capture_kubectl endpointslices.yaml get endpointslices.discovery.k8s.io --namespace streamweld-system -o yaml
+  capture_kubectl networkpolicies.yaml get networkpolicies.networking.k8s.io --namespace streamweld-system -o yaml
   capture_kubectl pods.yaml get pods --namespace streamweld-system -o yaml
   capture_kubectl pod-descriptions.txt describe pods --namespace streamweld-system
   capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp
@@ -67,6 +68,12 @@ collect_failure_diagnostics() {
   capture_kubectl kube-proxy.log logs \
     --namespace kube-system \
     --selector k8s-app=kube-proxy \
+    --all-containers=true \
+    --prefix=true \
+    --tail=-1
+  capture_kubectl kindnet.log logs \
+    --namespace kube-system \
+    --selector k8s-app=kindnet \
     --all-containers=true \
     --prefix=true \
     --tail=-1
@@ -181,6 +188,12 @@ if [[ ! "$proxy_node_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
   exit 1
 fi
 proxy_url="http://${proxy_node_ip}:30080"
+kind_gateway="$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' kind)"
+if [[ ! "$kind_gateway" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  echo "cannot determine the kind Docker bridge IPv4 gateway: $kind_gateway" >&2
+  exit 1
+fi
+kind_gateway_cidr="${kind_gateway}/32"
 
 docker build --file test/e2e/Dockerfile --target proxy --tag streamweld-proxy:chaos .
 docker build --file test/e2e/Dockerfile --target operator --tag streamweld-operator:chaos .
@@ -224,6 +237,11 @@ helm upgrade --install streamweld deploy/helm/streamweld \
 
 kubectl apply -f test/chaos/manifests/route.yaml
 kubectl apply -f test/chaos/manifests/proxy-nodeport.yaml
+# kind's default CNI enforces the chart NetworkPolicy. Add one disposable,
+# source-specific rule for the runner host; the production policy remains
+# installed and unchanged.
+sed "s|__KIND_GATEWAY_CIDR__|${kind_gateway_cidr}|" \
+  test/chaos/manifests/proxy-host-ingress.yaml.tmpl | kubectl apply -f -
 kubectl wait inferenceroute/deterministic-chaos \
   --namespace streamweld-system \
   --for=condition=Ready \

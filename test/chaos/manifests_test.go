@@ -77,7 +77,28 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 		}
 	}
 	if strings.Contains(serviceText, "kind: NetworkPolicy") {
-		t.Fatal("chaos NodePort manifest overrides the production ingress policy")
+		t.Fatal("chaos NodePort manifest embeds the separately scoped host-ingress policy")
+	}
+
+	hostIngress, err := os.ReadFile(filepath.Join("manifests", "proxy-host-ingress.yaml.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostIngressText := strings.ReplaceAll(string(hostIngress), "\r\n", "\n")
+	for _, required := range []string{
+		"name: streamweld-proxy-chaos-host-ingress",
+		"app.kubernetes.io/name: streamweld",
+		"app.kubernetes.io/component: proxy",
+		"app.kubernetes.io/instance: streamweld",
+		"cidr: __KIND_GATEWAY_CIDR__",
+		"port: http",
+	} {
+		if !strings.Contains(hostIngressText, required) {
+			t.Errorf("chaos host-ingress template is missing %q", required)
+		}
+	}
+	if strings.Contains(hostIngressText, "0.0.0.0/0") {
+		t.Fatal("chaos host-ingress policy permits every IPv4 source")
 	}
 
 	runner, err := os.ReadFile("run-kind.sh")
@@ -92,6 +113,9 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 		`proxy_node="${worker_nodes[2]#node/}"`,
 		`kubectl get node "$proxy_node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'`,
 		`proxy_url="http://${proxy_node_ip}:30080"`,
+		`kind_gateway="$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' kind)"`,
+		`kind_gateway_cidr="${kind_gateway}/32"`,
+		`sed "s|__KIND_GATEWAY_CIDR__|${kind_gateway_cidr}|"`,
 		`--proxy-url "$proxy_url"`,
 	} {
 		if !strings.Contains(runnerText, required) {
@@ -209,9 +233,11 @@ func TestKindRunnerPreservesFailureDiagnostics(t *testing.T) {
 		"capture_kubectl resources.txt get all --namespace streamweld-system -o wide",
 		"capture_kubectl services.yaml get services --namespace streamweld-system -o yaml",
 		"capture_kubectl endpointslices.yaml get endpointslices.discovery.k8s.io --namespace streamweld-system -o yaml",
+		"capture_kubectl networkpolicies.yaml get networkpolicies.networking.k8s.io --namespace streamweld-system -o yaml",
 		"capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp",
 		"capture_kubectl kube-proxy-config.yaml get configmap kube-proxy --namespace kube-system -o yaml",
 		"capture_kubectl kube-proxy.log logs",
+		"capture_kubectl kindnet.log logs",
 		"capture_component_logs proxy app.kubernetes.io/component=proxy",
 		"capture_component_logs operator app.kubernetes.io/component=operator",
 		"capture_component_logs backend app.kubernetes.io/name=streamweld-chaos-backend",
