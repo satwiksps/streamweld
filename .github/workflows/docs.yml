@@ -51,7 +51,7 @@ jobs:
         run: |
           test -f .docs-site/index.html
           test -f .docs-site/sitemap.xml
-          test -f .docs-site/stylesheets/extra.css
+          test -f .docs-site/stylesheets/streamweld-0.1.0.css
           grep -Fq 'Streamweld documentation - Streamweld' .docs-site/index.html
           grep -Fq 'class="mermaid"' .docs-site/index.html
           grep -Fq 'mermaid.esm.min.mjs' .docs-site/index.html
