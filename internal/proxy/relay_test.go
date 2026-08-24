@@ -519,7 +519,11 @@ func TestRelayTLSUsesConfiguredServerName(t *testing.T) {
 	if got := transport.TLSClientConfig.ServerName; got != serverName {
 		t.Fatalf("relay TLS ServerName = %q, want %q", got, serverName)
 	}
-	response, err := (&http.Client{Transport: transport}).Get(fixture.URL)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, fixture.URL, nil)
+	if err != nil {
+		t.Fatalf("create relay TLS fixture request: %v", err)
+	}
+	response, err := (&http.Client{Transport: transport}).Do(request)
 	if err != nil {
 		t.Fatalf("relay TLS handshake through IP with server name %q: %v", serverName, err)
 	}
@@ -535,7 +539,11 @@ func TestRelayTLSUsesConfiguredServerName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRelayTLS() with wrong name error = %v", err)
 	}
-	if response, err := (&http.Client{Transport: wrongNameTransport}).Get(fixture.URL); err == nil {
+	wrongNameRequest, err := http.NewRequestWithContext(context.Background(), http.MethodGet, fixture.URL, nil)
+	if err != nil {
+		t.Fatalf("create wrong-name relay TLS fixture request: %v", err)
+	}
+	if response, err := (&http.Client{Transport: wrongNameTransport}).Do(wrongNameRequest); err == nil {
 		_ = response.Body.Close()
 		t.Fatal("relay TLS handshake accepted a certificate for the wrong server name")
 	}
