@@ -225,8 +225,8 @@ mkdir -p "$forward_dir"
 kubectl port-forward --namespace streamweld-system service/streamweld-chaos-backend 18081:8000 >"$forward_dir/backend.log" 2>&1 &
 backend_forward_pid=$!
 for _ in $(seq 1 60); do
-  if curl --fail --silent "$proxy_url/healthz" >/dev/null && \
-     curl --fail --silent http://127.0.0.1:18081/health >/dev/null; then
+  if curl --fail --silent --show-error --connect-timeout 2 --max-time 3 "$proxy_url/healthz" >/dev/null && \
+     curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:18081/health >/dev/null; then
     break
   fi
   if ! kill -0 "$backend_forward_pid" >/dev/null 2>&1; then
@@ -235,11 +235,11 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-if ! curl --fail --silent "$proxy_url/healthz" >/dev/null; then
+if ! curl --fail --silent --show-error --connect-timeout 2 --max-time 3 "$proxy_url/healthz" >/dev/null; then
   echo "direct proxy NodePort is unreachable at $proxy_url; intermediary-free slow-reader testing is required" >&2
   exit 1
 fi
-curl --fail --silent http://127.0.0.1:18081/health >/dev/null
+curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:18081/health >/dev/null
 
 go run ./cmd/streamweldctl bench \
   --profile kind \

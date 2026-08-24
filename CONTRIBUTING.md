@@ -127,7 +127,7 @@ gate before requesting review.
 |---|---|
 | Go proxy, journal, migration, operator, or CLI | `go test ./...`, `make vet`, `make lint-go`, `make build-go` |
 | Concurrency or lifecycle logic | `go test -race ./...` on a CGO-capable host |
-| TypeScript clients or demo | `make typecheck`, `make test-ts`, `make build-ts` |
+| TypeScript clients or website | `make typecheck`, `make test-ts`, `make build-ts` |
 | Helm chart or CRDs | `make helm-lint`; run `make e2e` for runtime behavior |
 | Chaos harness or benchmark rendering | `make chaos`, `make bench-check`; use `make chaos-kind` for physical injections |
 | Terraform | `make terraform-validate terraform-lint` |

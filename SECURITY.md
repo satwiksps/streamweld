@@ -9,8 +9,8 @@ issues privately and give maintainers time to investigate before disclosure.
 
 | Version | Security support |
 |---|---|
-| `main` and unreleased builds | Investigated to prepare the first release; not a stable deployment target |
-| Tagged releases | None published yet; after `v0.1.0`, the latest release will be supported |
+| Latest tagged release | Supported |
+| `main` and unreleased builds | Investigated on a best-effort basis; not a stable deployment target |
 | Superseded releases | Not routinely patched; upgrade to the latest release |
 
 If a fix can be backported safely, maintainers may publish an additional patch
@@ -75,15 +75,14 @@ Security-relevant areas include:
 - operator route administration, drain hooks, webhook mutation, and RBAC;
 - Helm defaults, container security contexts, and network policies;
 - TypeScript cursor persistence, header forwarding, and resume behavior;
-- release artifacts, dependency integrity, and CI/CD configuration; and
-- the hosted failure-lab application's session and API boundaries.
+- release artifacts, dependency integrity, CI/CD configuration, and project
+  website deployment.
 
 The following are normally out of scope unless they demonstrate a concrete
 Streamweld vulnerability:
 
 - automated scanner output without a reproducible impact;
-- denial-of-service testing against the public demo or any system you do not
-  own;
+- denial-of-service testing against any system you do not own;
 - social engineering, phishing, physical attacks, or maintainer harassment;
 - attacks requiring compromised cluster-admin, host-root, or inference-backend
   control when no additional boundary is crossed;

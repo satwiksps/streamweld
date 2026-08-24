@@ -1,14 +1,25 @@
 # Streamweld Helm chart
 
 The chart installs the Streamweld proxy and operator, including its CRDs. The
-default in-memory journal deliberately runs one proxy replica:
+default in-memory journal deliberately runs one proxy replica. Install the
+published chart from GitHub Container Registry:
+
+```sh
+helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
+  --namespace streamweld-system \
+  --create-namespace \
+  --version 0.1.0 \
+  --wait --timeout 3m
+```
+
+For development from a source checkout:
 
 ```sh
 helm install streamweld deploy/helm/streamweld \
   --namespace streamweld-system --create-namespace
 ```
 
-Install a multi-replica deployment with the dependency-free embedded Redis:
+Install a multi-replica development deployment with the embedded Redis:
 
 ```sh
 helm upgrade --install streamweld deploy/helm/streamweld \

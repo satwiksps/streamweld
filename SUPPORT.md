@@ -1,9 +1,8 @@
 # Support
 
-Streamweld is a pre-release open-source project maintained on a best-effort
-basis. There is currently no paid support channel or guaranteed response time.
-The routes below help questions reach the right place and keep security reports
-private.
+Streamweld is an open-source project maintained on a best-effort basis. There
+is no paid support channel or guaranteed response time. The routes below help
+questions reach the right place and keep security reports private.
 
 ## Choose the right channel
 
@@ -16,7 +15,7 @@ private.
 | Suspected vulnerability | Follow the private process in [SECURITY.md](SECURITY.md) |
 | Conduct incident | Follow the confidential process in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md#reporting-and-enforcement) |
 
-Please search the [documentation](apps/docs-site/src/content/docs/index.mdx),
+Please search the [documentation](https://streamweld.readthedocs.io/en/latest/),
 existing Discussions, issues, and pull requests before opening something new.
 Do not open a support request solely to request an expedited review.
 
@@ -40,9 +39,8 @@ security channel instead.
 
 ## Version policy
 
-Support is focused on current `main` while the project is pre-release. After
-versioned releases begin, support will focus on the latest release. Before
-reporting a problem on an older revision, verify whether it still occurs on the
-current release or branch. See
+Support is focused on the latest tagged release. Changes on `main` are handled
+on a best-effort basis until they are released. Before reporting a problem on
+an older revision, verify whether it still occurs on the current release. See
 [SECURITY.md](SECURITY.md#supported-versions) for the separate security support
 policy.

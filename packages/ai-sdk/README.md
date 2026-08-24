@@ -3,6 +3,10 @@
 Vercel AI SDK v5 `ChatTransport` backed by `@streamweld/client` and Streamweld's
 durable OpenAI-compatible stream protocol.
 
+```sh
+npm install @streamweld/ai-sdk ai@^5
+```
+
 ```ts
 import { useChat } from "@ai-sdk/react";
 import { StreamweldChatTransport } from "@streamweld/ai-sdk";

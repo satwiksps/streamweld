@@ -280,19 +280,39 @@ jobs:
       - name: Publish client
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: >-
-          npm publish "${RUNNER_TEMP}/npm/streamweld-client-${{ needs.quality.outputs.version }}.tgz"
-          --access public
-          --provenance
-          --tag "${{ needs.quality.outputs.npm_tag }}"
+        shell: bash
+        run: |
+          archive="${RUNNER_TEMP}/npm/streamweld-client-${{ needs.quality.outputs.version }}.tgz"
+          package="@streamweld/client@${{ needs.quality.outputs.version }}"
+          existing="$(npm view "$package" dist.integrity 2>/dev/null || true)"
+          if [[ -n "$existing" ]]; then
+            expected="sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
+            test "$existing" = "$expected"
+            echo "$package already exists with the expected integrity"
+          else
+            npm publish "$archive" \
+              --access public \
+              --provenance \
+              --tag "${{ needs.quality.outputs.npm_tag }}"
+          fi
       - name: Publish AI SDK adapter
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: >-
-          npm publish "${RUNNER_TEMP}/npm/streamweld-ai-sdk-${{ needs.quality.outputs.version }}.tgz"
-          --access public
-          --provenance
-          --tag "${{ needs.quality.outputs.npm_tag }}"
+        shell: bash
+        run: |
+          archive="${RUNNER_TEMP}/npm/streamweld-ai-sdk-${{ needs.quality.outputs.version }}.tgz"
+          package="@streamweld/ai-sdk@${{ needs.quality.outputs.version }}"
+          existing="$(npm view "$package" dist.integrity 2>/dev/null || true)"
+          if [[ -n "$existing" ]]; then
+            expected="sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
+            test "$existing" = "$expected"
+            echo "$package already exists with the expected integrity"
+          else
+            npm publish "$archive" \
+              --access public \
+              --provenance \
+              --tag "${{ needs.quality.outputs.npm_tag }}"
+          fi
 
   publish-release:
     name: Publish GitHub release
@@ -322,4 +342,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+        run: |
+          notes_file=".github/release-notes/${RELEASE_TAG}.md"
+          test -f "$notes_file"
+          gh release edit "$RELEASE_TAG" \
+            --notes-file "$notes_file" \
+            --draft=false \
+            --repo "$GITHUB_REPOSITORY"

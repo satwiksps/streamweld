@@ -49,7 +49,7 @@ const integrations = [
     command: [
       "curl http://localhost:8080/v1/chat/completions \\",
       "  -H 'Content-Type: application/json' \\",
-      "  -d '{\"model\":\"llama-3.1-8b\",\"stream\":true}'",
+      "  -d '{\"model\":\"llama-3.1-8b\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}'",
     ].join("\n"),
   },
   {
@@ -58,8 +58,10 @@ const integrations = [
     description: "Install the operator and describe eligible inference backends declaratively.",
     file: "terminal",
     command: [
-      "make bootstrap",
-      "make e2e",
+      "helm upgrade --install streamweld \\",
+      "  oci://ghcr.io/satwiksps/charts/streamweld \\",
+      "  --namespace streamweld-system --create-namespace \\",
+      "  --version 0.1.0 --wait --timeout 3m",
       "kubectl -n streamweld-system get inferenceroutes",
     ].join("\n"),
   },
@@ -69,20 +71,23 @@ const integrations = [
     description: "Persist the stream identity and cursor, then reconnect after transport loss.",
     file: "app.ts",
     command: [
+      "import { createDurableStream, createLocalStoragePersistence } from '@streamweld/client';",
       "const stream = createDurableStream({",
       "  url: 'http://localhost:8080/v1/chat/completions',",
-      "  resumeFrom: { id: streamId, lastEventId: cursor },",
+      "  body: { model: 'llama-3.1-8b', messages: [{ role: 'user', content: 'Hello' }], stream: true },",
+      "  persist: createLocalStoragePersistence('active-stream'),",
       "});",
       "for await (const text of stream.text) render(text);",
     ].join("\n"),
   },
 ] as const;
 
-const sourceCommands = [
-  "git clone https://github.com/satwiksps/streamweld.git",
-  "cd streamweld",
-  "make bootstrap",
-  "make test",
+const installCommands = [
+  "helm upgrade --install streamweld \\",
+  "  oci://ghcr.io/satwiksps/charts/streamweld \\",
+  "  --namespace streamweld-system \\",
+  "  --create-namespace --version 0.1.0 \\",
+  "  --wait --timeout 3m",
 ].join("\n");
 
 function CopyButton({ value, label }: { value: string; label: string }): React.JSX.Element {
@@ -211,7 +216,7 @@ function App(): React.JSX.Element {
                 <a className="inline-flex h-11 w-full items-center justify-center rounded-md bg-white px-5 text-sm font-semibold text-zinc-950 transition-colors hover:bg-zinc-200 sm:w-auto" href="#get-started">Get started</a>
                 <a className="inline-flex h-11 w-full items-center justify-center rounded-md border border-white/12 bg-white/[0.035] px-5 text-sm font-medium text-zinc-200 transition-colors hover:border-white/20 hover:bg-white/[0.07] sm:w-auto" href={REPOSITORY_URL} {...externalLinkProps}>View source</a>
               </div>
-              <p className="mt-5 text-sm text-zinc-400">Self-hosted and pre-release. Keep your inference runtime and OpenAI-compatible clients.</p>
+              <p className="mt-5 text-sm text-zinc-400">Self-hosted. Keep your inference runtime and OpenAI-compatible clients.</p>
             </div>
 
             <div id="product" className="mt-14 scroll-mt-24 lg:mt-16">
@@ -345,7 +350,7 @@ function App(): React.JSX.Element {
                   ))}
                 </ol>
                 <div className="mt-6 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-white/[0.07] pt-6 text-xs text-zinc-400 sm:grid-cols-4">
-                  {["No prompt replay", "No hidden duplicate", "No model lock-in", "No hosted control plane"].map((fact) => (<span className="flex items-center gap-2" key={fact}><i className="size-1.5 rounded-full bg-emerald-400" aria-hidden="true" />{fact}</span>))}
+                  {["No client-side restart", "No hidden duplicate", "No model lock-in", "No hosted control plane"].map((fact) => (<span className="flex items-center gap-2" key={fact}><i className="size-1.5 rounded-full bg-emerald-400" aria-hidden="true" />{fact}</span>))}
                 </div>
               </div>
             </div>
@@ -355,10 +360,10 @@ function App(): React.JSX.Element {
         <section id="get-started" className="scroll-mt-24 border-t border-white/[0.07]">
           <div className="mx-auto max-w-7xl px-5 py-20 sm:px-6 lg:px-8 lg:py-28">
             <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:gap-20">
-              <div><p className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-blue-300">Run the source</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">Exercise the durable path locally.</h2><p className="mt-4 text-sm leading-6 text-zinc-400">Streamweld is pre-release. Build the repository, run the deterministic suites, and follow the kind walkthrough before production evaluation.</p></div>
-              <div className="overflow-hidden rounded-lg border border-white/[0.09] bg-[#0b0b0e]"><div className="flex h-11 items-center justify-between border-b border-white/[0.07] px-4"><span className="font-mono text-[10px] text-zinc-400">terminal</span><CopyButton value={sourceCommands} label="Copy source commands" /></div><pre className="overflow-x-auto p-4 font-mono text-[11px] leading-6 text-zinc-300 sm:p-5 sm:text-xs"><code>{sourceCommands}</code></pre></div>
+              <div><p className="font-mono text-xs font-medium uppercase tracking-[0.16em] text-blue-300">Install v0.1.0</p><h2 className="mt-4 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">Add the durable boundary to Kubernetes.</h2><p className="mt-4 text-sm leading-6 text-zinc-400">Install the versioned proxy and operator, then follow the ten-minute walkthrough with the CPU-only sample backend.</p></div>
+              <div className="overflow-hidden rounded-lg border border-white/[0.09] bg-[#0b0b0e]"><div className="flex h-11 items-center justify-between border-b border-white/[0.07] px-4"><span className="font-mono text-[10px] text-zinc-400">terminal</span><CopyButton value={installCommands} label="Copy Helm install command" /></div><pre className="overflow-x-auto p-4 font-mono text-[11px] leading-6 text-zinc-300 sm:p-5 sm:text-xs"><code>{installCommands}</code></pre></div>
             </div>
-            <div className="mt-14 flex flex-col gap-4 border-t border-white/[0.07] pt-8 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-zinc-400">Apache-2.0, Go + TypeScript, pre-release</p><a className="inline-flex h-10 items-center justify-center rounded-md bg-white px-4 text-sm font-semibold text-zinc-950 transition-colors hover:bg-zinc-200" href={GETTING_STARTED_URL} {...externalLinkProps}>Open installation guide</a></div>
+            <div className="mt-14 flex flex-col gap-4 border-t border-white/[0.07] pt-8 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-zinc-400">Apache-2.0, Go + TypeScript, v0.1.0</p><a className="inline-flex h-10 items-center justify-center rounded-md bg-white px-4 text-sm font-semibold text-zinc-950 transition-colors hover:bg-zinc-200" href={GETTING_STARTED_URL} {...externalLinkProps}>Open installation guide</a></div>
           </div>
         </section>
       </main>
@@ -368,7 +373,7 @@ function App(): React.JSX.Element {
           <div><a className="inline-flex items-center gap-2.5 font-semibold tracking-tight" href="#top"><span className="grid size-7 place-items-center rounded-md border border-white/15 bg-white/[0.04] font-mono text-[10px] font-bold text-blue-300" aria-hidden="true">SW</span>Streamweld</a><p className="mt-3 max-w-sm text-xs leading-5 text-zinc-400">Durable token streams for self-hosted LLM inference.</p></div>
           <div className="flex flex-wrap gap-x-6 gap-y-3 text-xs text-zinc-400"><a className="hover:text-zinc-200" href={DOCUMENTATION_URL} {...externalLinkProps}>Docs</a><a className="hover:text-zinc-200" href={`${DOCUMENTATION_URL}en/latest/protocol/resume-and-stop/`} {...externalLinkProps}>Protocol</a><a className="hover:text-zinc-200" href={`${REPOSITORY_URL}/blob/main/SECURITY.md`} {...externalLinkProps}>Security</a><a className="hover:text-zinc-200" href={`${REPOSITORY_URL}/blob/main/CONTRIBUTING.md`} {...externalLinkProps}>Contributing</a><a className="hover:text-zinc-200" href={REPOSITORY_URL} {...externalLinkProps}>GitHub</a></div>
         </div>
-        <div className="mx-auto flex max-w-7xl flex-col gap-1 border-t border-white/[0.05] px-5 py-5 font-mono text-[11px] text-zinc-400 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8"><span>Apache License 2.0</span><span>Pre-release, self-hosted and open source</span></div>
+        <div className="mx-auto flex max-w-7xl flex-col gap-1 border-t border-white/[0.05] px-5 py-5 font-mono text-[11px] text-zinc-400 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8"><span>Apache License 2.0</span><span>v0.1.0 · self-hosted · open source</span></div>
       </footer>
 
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({ "@context": "https://schema.org", "@type": "SoftwareApplication", name: "Streamweld", applicationCategory: "DeveloperApplication", operatingSystem: "Kubernetes", url: "https://streamweld.vercel.app/", license: "https://www.apache.org/licenses/LICENSE-2.0", codeRepository: REPOSITORY_URL, description: "Durable token streams for self-hosted LLM inference." }).replace(/</g, "\\u003c") }} />

@@ -15,10 +15,11 @@ exact resume cursor.
 [Install Streamweld](getting-started.md){ .md-button .md-button--primary }
 [Understand the durability contract](concepts/durability.md){ .md-button }
 
-!!! caution "Pre-release"
+!!! note "Current release"
 
-    The source tree is runnable today. Versioned binaries, images, charts, and
-    npm packages will be published with the first release.
+    Streamweld `v0.1.0` is available as versioned binaries, container images, a
+    Helm OCI chart, and TypeScript packages. APIs and `v1alpha1` resources may
+    change during the 0.x release series.
 
 ```mermaid
 flowchart TB
@@ -64,20 +65,21 @@ between them: stream identity, ordered events, replay, and guarded continuation.
 ## Quick start
 
 ```bash
-git clone https://github.com/satwiksps/streamweld.git
-cd streamweld
-make bootstrap
-make test
+helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
+  --namespace streamweld-system \
+  --create-namespace \
+  --version 0.1.0 \
+  --wait --timeout 3m
 ```
 
-Continue to [installation and the first cluster](getting-started.md) to build the
-source, install Streamweld into kind, and exercise reader and producer recovery.
+Continue to [installation and the first cluster](getting-started.md) to add the
+CPU-only sample backend and exercise reader and producer recovery.
 
 ## Choose the right section
 
 | If you want to | Start here |
 | --- | --- |
-| Install from source | [Installation and first cluster](getting-started.md) |
+| Install Streamweld | [Installation and first cluster](getting-started.md) |
 | Understand the durability boundary | [Durability contract](concepts/durability.md) |
 | Understand the data and control planes | [Architecture](concepts/architecture.md) |
 | Implement an exact resume cursor | [Resume and stop](protocol/resume-and-stop.md) |
