@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-for command in docker kind kubectl helm go curl sed timeout uname; do
+for command in docker kind kubectl helm go curl openssl sed timeout uname; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required kind-chaos command is missing: $command" >&2
     exit 1
@@ -206,6 +206,48 @@ kind load docker-image --name "$cluster_name" \
   streamweld-chaos-backend:kind-rollout
 
 kubectl create namespace streamweld-system --dry-run=client -o yaml | kubectl apply -f -
+relay_tls_dir="$forward_dir/relay-tls"
+mkdir -p "$relay_tls_dir"
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$relay_tls_dir/ca.key" \
+  -out "$relay_tls_dir/ca.crt" \
+  -subj "/CN=streamweld-chaos-relay-ca" \
+  -days 1 \
+  -sha256 \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout "$relay_tls_dir/tls.key" \
+  -out "$relay_tls_dir/tls.csr" \
+  -subj "/CN=*.streamweld-relay.streamweld-system.svc" \
+  -sha256 \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "subjectAltName=DNS:*.streamweld-relay.streamweld-system.svc" \
+  -addext "extendedKeyUsage=serverAuth,clientAuth" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  >/dev/null 2>&1
+openssl x509 -req \
+  -in "$relay_tls_dir/tls.csr" \
+  -CA "$relay_tls_dir/ca.crt" \
+  -CAkey "$relay_tls_dir/ca.key" \
+  -CAcreateserial \
+  -out "$relay_tls_dir/tls.crt" \
+  -days 1 \
+  -sha256 \
+  -copy_extensions copy \
+  >/dev/null 2>&1
+openssl verify \
+  -CAfile "$relay_tls_dir/ca.crt" \
+  -purpose sslserver \
+  -verify_hostname fixture.streamweld-relay.streamweld-system.svc \
+  "$relay_tls_dir/tls.crt"
+openssl verify -CAfile "$relay_tls_dir/ca.crt" -purpose sslclient "$relay_tls_dir/tls.crt"
+kubectl create secret generic streamweld-chaos-relay-tls \
+  --namespace streamweld-system \
+  --from-file=ca.crt="$relay_tls_dir/ca.crt" \
+  --from-file=tls.crt="$relay_tls_dir/tls.crt" \
+  --from-file=tls.key="$relay_tls_dir/tls.key"
 kubectl apply -f test/chaos/manifests/backend.yaml
 kubectl rollout status deployment/streamweld-chaos-backend --namespace streamweld-system --timeout=180s
 # Ordinary 64-token scenarios stay below the reader budget during injection.
@@ -226,6 +268,8 @@ helm upgrade --install streamweld deploy/helm/streamweld \
   --set journal.backend=redis \
   --set reader.maxLagBytes=65536 \
   --set redis.enabled=true \
+  --set relay.enabled=true \
+  --set relay.tls.existingSecret=streamweld-chaos-relay-tls \
   --set operator.image.repository=streamweld-operator \
   --set operator.image.tag=chaos \
   --set operator.image.pullPolicy=Never \

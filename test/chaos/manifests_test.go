@@ -133,6 +133,19 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 			t.Errorf("kind runner is missing bounded proxy TCP send memory %q", required)
 		}
 	}
+	for _, required := range []string{
+		`basicConstraints=critical,CA:FALSE`,
+		`subjectAltName=DNS:*.streamweld-relay.streamweld-system.svc`,
+		`extendedKeyUsage=serverAuth,clientAuth`,
+		`-verify_hostname fixture.streamweld-relay.streamweld-system.svc`,
+		"kubectl create secret generic streamweld-chaos-relay-tls",
+		"--set relay.enabled=true",
+		"--set relay.tls.existingSecret=streamweld-chaos-relay-tls",
+	} {
+		if !strings.Contains(runnerText, required) {
+			t.Errorf("kind runner is missing owner-relay fixture %q", required)
+		}
+	}
 	if strings.Contains(runnerText, "service/streamweld-proxy 18080:8080") {
 		t.Fatal("kind runner still places kubectl port-forward buffering in the slow-reader path")
 	}

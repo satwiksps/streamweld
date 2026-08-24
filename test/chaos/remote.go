@@ -593,10 +593,10 @@ func finishRemoteStream(
 		if err != nil {
 			return err
 		}
-		_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		payload, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 		closeErr := response.Body.Close()
 		if response.StatusCode != http.StatusAccepted {
-			return fmt.Errorf("stop stream %s: status %s", stream.id, response.Status)
+			return fmt.Errorf("stop stream %s: status %s: %s", stream.id, response.Status, bytes.TrimSpace(payload))
 		}
 		if err := errors.Join(readErr, closeErr); err != nil {
 			return err
