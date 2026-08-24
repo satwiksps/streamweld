@@ -90,6 +90,20 @@ body {
   font-weight: 600;
 }
 
+[data-md-color-scheme="slate"]
+  .md-typeset
+  .md-button:not(.md-button--primary) {
+  border-color: var(--md-accent-fg-color);
+  color: var(--md-accent-fg-color);
+}
+
+[data-md-color-scheme="slate"]
+  .md-typeset
+  .md-button:not(.md-button--primary):is(:hover, :focus-visible) {
+  background-color: var(--md-accent-fg-color);
+  color: var(--md-default-bg-color);
+}
+
 .md-typeset table:not([class]) {
   font-size: 0.72rem;
 }
