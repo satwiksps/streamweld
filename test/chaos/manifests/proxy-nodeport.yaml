@@ -9,6 +9,7 @@ metadata:
     app.kubernetes.io/part-of: streamweld
 spec:
   type: NodePort
+  externalTrafficPolicy: Local
   selector:
     app.kubernetes.io/name: streamweld
     app.kubernetes.io/component: proxy

@@ -71,7 +71,7 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	serviceText := strings.ReplaceAll(string(service), "\r\n", "\n")
-	for _, required := range []string{"type: NodePort", "nodePort: 30080"} {
+	for _, required := range []string{"type: NodePort", "externalTrafficPolicy: Local", "nodePort: 30080"} {
 		if !strings.Contains(serviceText, required) {
 			t.Errorf("chaos proxy Service is missing %q", required)
 		}
@@ -89,7 +89,8 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 		t.Fatal("kind runner does not install the direct proxy NodePort")
 	}
 	for _, required := range []string{
-		`docker inspect --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}'`,
+		`proxy_node="${worker_nodes[2]#node/}"`,
+		`kubectl get node "$proxy_node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'`,
 		`proxy_url="http://${proxy_node_ip}:30080"`,
 		`--proxy-url "$proxy_url"`,
 	} {
@@ -206,7 +207,11 @@ func TestKindRunnerPreservesFailureDiagnostics(t *testing.T) {
 		"kind chaos requires Kubernetes >=1.32 for pod-scoped net.ipv4.tcp_wmem",
 		"kind chaos requires Linux >=4.15 for pod-scoped net.ipv4.tcp_wmem",
 		"capture_kubectl resources.txt get all --namespace streamweld-system -o wide",
+		"capture_kubectl services.yaml get services --namespace streamweld-system -o yaml",
+		"capture_kubectl endpointslices.yaml get endpointslices.discovery.k8s.io --namespace streamweld-system -o yaml",
 		"capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp",
+		"capture_kubectl kube-proxy-config.yaml get configmap kube-proxy --namespace kube-system -o yaml",
+		"capture_kubectl kube-proxy.log logs",
 		"capture_component_logs proxy app.kubernetes.io/component=proxy",
 		"capture_component_logs operator app.kubernetes.io/component=operator",
 		"capture_component_logs backend app.kubernetes.io/name=streamweld-chaos-backend",

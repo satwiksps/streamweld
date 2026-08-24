@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-for command in docker kind kubectl helm go curl uname; do
+for command in docker kind kubectl helm go curl timeout uname; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required kind-chaos command is missing: $command" >&2
     exit 1
@@ -56,15 +56,23 @@ collect_failure_diagnostics() {
   capture_kubectl nodes.txt get nodes -o wide
   capture_kubectl pods-all-namespaces.txt get pods --all-namespaces -o wide
   capture_kubectl resources.txt get all --namespace streamweld-system -o wide
+  capture_kubectl services.yaml get services --namespace streamweld-system -o yaml
+  capture_kubectl endpointslices.yaml get endpointslices.discovery.k8s.io --namespace streamweld-system -o yaml
   capture_kubectl pods.yaml get pods --namespace streamweld-system -o yaml
   capture_kubectl pod-descriptions.txt describe pods --namespace streamweld-system
   capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp
   capture_kubectl inferenceroutes.yaml get inferenceroutes.streamweld.io --namespace streamweld-system -o yaml
   capture_kubectl durabilitypolicies.yaml get durabilitypolicies.streamweld.io --namespace streamweld-system -o yaml
+  capture_kubectl kube-proxy-config.yaml get configmap kube-proxy --namespace kube-system -o yaml
+  capture_kubectl kube-proxy.log logs \
+    --namespace kube-system \
+    --selector k8s-app=kube-proxy \
+    --all-containers=true \
+    --prefix=true \
+    --tail=-1
 
-  helm status streamweld \
+  timeout 20s helm status streamweld \
     --namespace streamweld-system \
-    --kube-apiserver-timeout 15s \
     >"$diagnostics_dir/helm-status.txt" 2>&1 || true
   capture_component_logs proxy app.kubernetes.io/component=proxy
   capture_component_logs operator app.kubernetes.io/component=operator
@@ -148,13 +156,6 @@ for node_kernel in "${node_kernels[@]}"; do
   fi
 done
 
-proxy_node_ip="$(docker inspect --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}' "${cluster_name}-control-plane")"
-if [[ ! "$proxy_node_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-  echo "cannot determine the direct kind control-plane IPv4 address: $proxy_node_ip" >&2
-  exit 1
-fi
-proxy_url="http://${proxy_node_ip}:30080"
-
 # kubeadm (and therefore kind) does not guarantee a positive worker-role label.
 # Identify workers by excluding both current and legacy control-plane labels.
 mapfile -t worker_nodes < <(kubectl get nodes -l '!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/master' -o name | sort)
@@ -169,6 +170,17 @@ for index in "${!worker_nodes[@]}"; do
   fi
   kubectl label "${worker_nodes[$index]}" streamweld-chaos-role="$role" --overwrite >/dev/null
 done
+
+# Both proxy replicas are pinned to the dedicated system worker. Entering the
+# local-only NodePort on that worker avoids a cross-node CNI hop while retaining
+# end-to-end TCP backpressure for the slow-reader assertion.
+proxy_node="${worker_nodes[2]#node/}"
+proxy_node_ip="$(kubectl get node "$proxy_node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
+if [[ ! "$proxy_node_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  echo "cannot determine the direct kind system-worker IPv4 address for $proxy_node: $proxy_node_ip" >&2
+  exit 1
+fi
+proxy_url="http://${proxy_node_ip}:30080"
 
 docker build --file test/e2e/Dockerfile --target proxy --tag streamweld-proxy:chaos .
 docker build --file test/e2e/Dockerfile --target operator --tag streamweld-operator:chaos .
