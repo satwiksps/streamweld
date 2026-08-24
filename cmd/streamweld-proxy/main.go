@@ -64,10 +64,12 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 	flags.StringVar(&config.RedisKeyPrefix, "redis-key-prefix", config.RedisKeyPrefix, "namespace prefix for Redis journal keys")
 	flags.StringVar(&config.ReplicaID, "replica-id", config.ReplicaID, "unique relay identity; generated when omitted")
 	flags.StringVar(&config.RelayListenAddress, "relay-listen", config.RelayListenAddress, "private owner-relay TCP listen address")
-	flags.Func("relay-advertise-url", "private owner-relay base URL (or STREAMWELD_RELAY_ADVERTISE_URL; empty disables relay)", func(value string) error {
+	flags.Func("relay-advertise-url", "private owner-relay base URL; mutually exclusive with relay-advertise-host", func(value string) error {
 		config.RelayAdvertiseURL = value
 		return nil
 	})
+	flags.StringVar(&config.RelayAdvertiseHost, "relay-advertise-host", config.RelayAdvertiseHost, "private relay host or IP; derives an HTTPS URL using the relay listen port")
+	flags.StringVar(&config.RelayTLSServerName, "relay-tls-server-name", config.RelayTLSServerName, "TLS name used to verify relay peers; defaults to the advertise URL host")
 	flags.StringVar(&config.RelayCAFile, "relay-ca-file", config.RelayCAFile, "PEM CA used to verify relay peers")
 	flags.StringVar(&config.RelayCertificateFile, "relay-cert-file", config.RelayCertificateFile, "PEM certificate used for relay mutual TLS")
 	flags.StringVar(&config.RelayPrivateKeyFile, "relay-key-file", config.RelayPrivateKeyFile, "PEM private key used for relay mutual TLS")

@@ -22,10 +22,31 @@ journal, and an exact resume cursor that can outlive a reader connection or
 backend attempt.
 
 > [!IMPORTANT]
-> **Pre-release:** source, tests, documentation, and deterministic failure
-> evidence are public. Versioned binaries, container images, the Helm OCI chart,
-> and npm packages have not been published yet. APIs and `v1alpha1` Kubernetes
-> resources may change before the first release.
+> The current release is `v0.1.0`. APIs and `v1alpha1` Kubernetes resources may
+> change during the 0.x release series.
+
+## Install
+
+Install the proxy and operator into Kubernetes with Helm:
+
+```sh
+helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
+  --namespace streamweld-system \
+  --create-namespace \
+  --version 0.1.0 \
+  --wait --timeout 3m
+```
+
+Install the dependency-free TypeScript client, or the Vercel AI SDK v5 adapter:
+
+```sh
+npm install @streamweld/client
+npm install @streamweld/ai-sdk ai@^5
+```
+
+Prebuilt `streamweld-proxy`, `streamweld-operator`, and `streamweldctl` archives
+for Linux, macOS, and Windows are available from
+[GitHub Releases](https://github.com/satwiksps/streamweld/releases/tag/v0.1.0).
 
 ## Why Streamweld
 
@@ -42,11 +63,10 @@ explicit:
 
 ```mermaid
 flowchart LR
-    Client[OpenAI-compatible client] -->|HTTP + SSE| Proxy[Streamweld proxy]
+    Client[OpenAI-compatible client] -->|HTTP + SSE · exact resume cursor| Proxy[Streamweld proxy]
     Proxy -->|OpenAI-compatible request| Pool[Inference pool<br/>vLLM · SGLang · TGI]
     Proxy -->|commit and replay| Journal[(Memory or Redis journal)]
     Operator[Kubernetes operator<br/>routes · policy · drain] -->|route snapshots| Proxy
-    Client -.->|stream ID + exact cursor| Journal
 ```
 
 The Go proxy owns the request and streaming data path. The journal owns ordered
@@ -72,8 +92,7 @@ make e2e
 ```
 
 See the [ten-minute guide](https://streamweld.readthedocs.io/en/latest/getting-started/)
-for the complete installation walkthrough and the distinction between the
-current source flow and the forthcoming `v0.1.0` release flow.
+for a complete installation and recovery walkthrough.
 
 ## Safety boundary
 

@@ -2,13 +2,21 @@
   "name": "@streamweld/client",
   "version": "0.1.0",
   "description": "Dependency-free durable streaming client for Streamweld",
+  "keywords": [
+    "llm",
+    "openai",
+    "resumable",
+    "server-sent-events",
+    "streaming",
+    "typescript"
+  ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/satwiksps/streamweld.git",
     "directory": "packages/client"
   },
-  "homepage": "https://github.com/satwiksps/streamweld#readme",
+  "homepage": "https://streamweld.readthedocs.io/en/latest/sdk/typescript/",
   "bugs": {
     "url": "https://github.com/satwiksps/streamweld/issues"
   },
@@ -22,9 +30,14 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "engines": {

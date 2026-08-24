@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-for command in docker kind kubectl helm go curl uname; do
+for command in docker kind kubectl helm go curl openssl sed timeout uname; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required kind-chaos command is missing: $command" >&2
     exit 1
@@ -56,15 +56,30 @@ collect_failure_diagnostics() {
   capture_kubectl nodes.txt get nodes -o wide
   capture_kubectl pods-all-namespaces.txt get pods --all-namespaces -o wide
   capture_kubectl resources.txt get all --namespace streamweld-system -o wide
+  capture_kubectl services.yaml get services --namespace streamweld-system -o yaml
+  capture_kubectl endpointslices.yaml get endpointslices.discovery.k8s.io --namespace streamweld-system -o yaml
+  capture_kubectl networkpolicies.yaml get networkpolicies.networking.k8s.io --namespace streamweld-system -o yaml
   capture_kubectl pods.yaml get pods --namespace streamweld-system -o yaml
   capture_kubectl pod-descriptions.txt describe pods --namespace streamweld-system
   capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp
   capture_kubectl inferenceroutes.yaml get inferenceroutes.streamweld.io --namespace streamweld-system -o yaml
   capture_kubectl durabilitypolicies.yaml get durabilitypolicies.streamweld.io --namespace streamweld-system -o yaml
+  capture_kubectl kube-proxy-config.yaml get configmap kube-proxy --namespace kube-system -o yaml
+  capture_kubectl kube-proxy.log logs \
+    --namespace kube-system \
+    --selector k8s-app=kube-proxy \
+    --all-containers=true \
+    --prefix=true \
+    --tail=-1
+  capture_kubectl kindnet.log logs \
+    --namespace kube-system \
+    --selector k8s-app=kindnet \
+    --all-containers=true \
+    --prefix=true \
+    --tail=-1
 
-  helm status streamweld \
+  timeout 20s helm status streamweld \
     --namespace streamweld-system \
-    --kube-apiserver-timeout 15s \
     >"$diagnostics_dir/helm-status.txt" 2>&1 || true
   capture_component_logs proxy app.kubernetes.io/component=proxy
   capture_component_logs operator app.kubernetes.io/component=operator
@@ -148,13 +163,6 @@ for node_kernel in "${node_kernels[@]}"; do
   fi
 done
 
-proxy_node_ip="$(docker inspect --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}' "${cluster_name}-control-plane")"
-if [[ ! "$proxy_node_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-  echo "cannot determine the direct kind control-plane IPv4 address: $proxy_node_ip" >&2
-  exit 1
-fi
-proxy_url="http://${proxy_node_ip}:30080"
-
 # kubeadm (and therefore kind) does not guarantee a positive worker-role label.
 # Identify workers by excluding both current and legacy control-plane labels.
 mapfile -t worker_nodes < <(kubectl get nodes -l '!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/master' -o name | sort)
@@ -170,6 +178,23 @@ for index in "${!worker_nodes[@]}"; do
   kubectl label "${worker_nodes[$index]}" streamweld-chaos-role="$role" --overwrite >/dev/null
 done
 
+# Both proxy replicas are pinned to the dedicated system worker. Entering the
+# local-only NodePort on that worker avoids a cross-node CNI hop while retaining
+# end-to-end TCP backpressure for the slow-reader assertion.
+proxy_node="${worker_nodes[2]#node/}"
+proxy_node_ip="$(kubectl get node "$proxy_node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
+if [[ ! "$proxy_node_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  echo "cannot determine the direct kind system-worker IPv4 address for $proxy_node: $proxy_node_ip" >&2
+  exit 1
+fi
+proxy_url="http://${proxy_node_ip}:30080"
+kind_gateway="$(docker inspect --format '{{(index .NetworkSettings.Networks "kind").Gateway}}' "$proxy_node")"
+if [[ ! "$kind_gateway" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  echo "cannot determine the kind Docker bridge IPv4 gateway: $kind_gateway" >&2
+  exit 1
+fi
+kind_gateway_cidr="${kind_gateway}/32"
+
 docker build --file test/e2e/Dockerfile --target proxy --tag streamweld-proxy:chaos .
 docker build --file test/e2e/Dockerfile --target operator --tag streamweld-operator:chaos .
 docker build --file test/chaos/Dockerfile --tag streamweld-chaos-backend:kind .
@@ -181,6 +206,48 @@ kind load docker-image --name "$cluster_name" \
   streamweld-chaos-backend:kind-rollout
 
 kubectl create namespace streamweld-system --dry-run=client -o yaml | kubectl apply -f -
+relay_tls_dir="$forward_dir/relay-tls"
+mkdir -p "$relay_tls_dir"
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$relay_tls_dir/ca.key" \
+  -out "$relay_tls_dir/ca.crt" \
+  -subj "/CN=streamweld-chaos-relay-ca" \
+  -days 1 \
+  -sha256 \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout "$relay_tls_dir/tls.key" \
+  -out "$relay_tls_dir/tls.csr" \
+  -subj "/CN=streamweld-relay.streamweld-system.svc" \
+  -sha256 \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "subjectAltName=DNS:streamweld-relay.streamweld-system.svc" \
+  -addext "extendedKeyUsage=serverAuth,clientAuth" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  >/dev/null 2>&1
+openssl x509 -req \
+  -in "$relay_tls_dir/tls.csr" \
+  -CA "$relay_tls_dir/ca.crt" \
+  -CAkey "$relay_tls_dir/ca.key" \
+  -CAcreateserial \
+  -out "$relay_tls_dir/tls.crt" \
+  -days 1 \
+  -sha256 \
+  -copy_extensions copy \
+  >/dev/null 2>&1
+openssl verify \
+  -CAfile "$relay_tls_dir/ca.crt" \
+  -purpose sslserver \
+  -verify_hostname streamweld-relay.streamweld-system.svc \
+  "$relay_tls_dir/tls.crt"
+openssl verify -CAfile "$relay_tls_dir/ca.crt" -purpose sslclient "$relay_tls_dir/tls.crt"
+kubectl create secret generic streamweld-chaos-relay-tls \
+  --namespace streamweld-system \
+  --from-file=ca.crt="$relay_tls_dir/ca.crt" \
+  --from-file=tls.crt="$relay_tls_dir/tls.crt" \
+  --from-file=tls.key="$relay_tls_dir/tls.key"
 kubectl apply -f test/chaos/manifests/backend.yaml
 kubectl rollout status deployment/streamweld-chaos-backend --namespace streamweld-system --timeout=180s
 # Ordinary 64-token scenarios stay below the reader budget during injection.
@@ -201,6 +268,8 @@ helm upgrade --install streamweld deploy/helm/streamweld \
   --set journal.backend=redis \
   --set reader.maxLagBytes=65536 \
   --set redis.enabled=true \
+  --set relay.enabled=true \
+  --set relay.tls.existingSecret=streamweld-chaos-relay-tls \
   --set operator.image.repository=streamweld-operator \
   --set operator.image.tag=chaos \
   --set operator.image.pullPolicy=Never \
@@ -212,6 +281,11 @@ helm upgrade --install streamweld deploy/helm/streamweld \
 
 kubectl apply -f test/chaos/manifests/route.yaml
 kubectl apply -f test/chaos/manifests/proxy-nodeport.yaml
+# kind's default CNI enforces the chart NetworkPolicy. Add one disposable,
+# source-specific rule for the runner host; the production policy remains
+# installed and unchanged.
+sed "s|__KIND_GATEWAY_CIDR__|${kind_gateway_cidr}|" \
+  test/chaos/manifests/proxy-host-ingress.yaml.tmpl | kubectl apply -f -
 kubectl wait inferenceroute/deterministic-chaos \
   --namespace streamweld-system \
   --for=condition=Ready \
@@ -225,8 +299,8 @@ mkdir -p "$forward_dir"
 kubectl port-forward --namespace streamweld-system service/streamweld-chaos-backend 18081:8000 >"$forward_dir/backend.log" 2>&1 &
 backend_forward_pid=$!
 for _ in $(seq 1 60); do
-  if curl --fail --silent "$proxy_url/healthz" >/dev/null && \
-     curl --fail --silent http://127.0.0.1:18081/health >/dev/null; then
+  if curl --fail --silent --show-error --connect-timeout 2 --max-time 3 "$proxy_url/healthz" >/dev/null && \
+     curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:18081/health >/dev/null; then
     break
   fi
   if ! kill -0 "$backend_forward_pid" >/dev/null 2>&1; then
@@ -235,11 +309,11 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-if ! curl --fail --silent "$proxy_url/healthz" >/dev/null; then
+if ! curl --fail --silent --show-error --connect-timeout 2 --max-time 3 "$proxy_url/healthz" >/dev/null; then
   echo "direct proxy NodePort is unreachable at $proxy_url; intermediary-free slow-reader testing is required" >&2
   exit 1
 fi
-curl --fail --silent http://127.0.0.1:18081/health >/dev/null
+curl --fail --silent --show-error --connect-timeout 2 --max-time 3 http://127.0.0.1:18081/health >/dev/null
 
 go run ./cmd/streamweldctl bench \
   --profile kind \

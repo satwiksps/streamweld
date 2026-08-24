@@ -161,36 +161,44 @@ remain live through that outage.
 
 ### Owner relay for Redis outages
 
-The owner relay is disabled when `STREAMWELD_RELAY_ADVERTISE_URL` is empty. When
-enabled, it listens separately from the public inference API. Each stream stores
-a private owner replica ID and relay URL in Redis; neither value is included in
-the public open event or stream-state JSON, and relay certificates and keys are
-never stored in Redis.
+The owner relay is disabled when both `STREAMWELD_RELAY_ADVERTISE_URL` and
+`STREAMWELD_RELAY_ADVERTISE_HOST` are empty. When enabled, it listens separately
+from the public inference API. Each stream stores a private owner replica ID and
+relay URL in Redis; neither value is included in the public open event or
+stream-state JSON, and relay certificates and keys are never stored in Redis.
 
-Each production replica needs a unique identity, a directly routable advertise
-URL for that exact replica, and mutual-TLS material:
+Each production process needs a fresh identity, a directly routable advertise
+address for that exact replica, and mutual-TLS material. The safest identity
+configuration is to omit `STREAMWELD_REPLICA_ID` and use the generated value:
 
 ```text
-STREAMWELD_REPLICA_ID=streamweld-proxy-0
 STREAMWELD_RELAY_LISTEN=0.0.0.0:8081
-STREAMWELD_RELAY_ADVERTISE_URL=https://proxy-0.relay.internal:8081
+STREAMWELD_RELAY_ADVERTISE_HOST=10.42.1.17
+STREAMWELD_RELAY_TLS_SERVER_NAME=streamweld-relay.streamweld-system.svc
 STREAMWELD_RELAY_CA_FILE=/var/run/streamweld-relay/ca.crt
 STREAMWELD_RELAY_CERT_FILE=/var/run/streamweld-relay/tls.crt
 STREAMWELD_RELAY_KEY_FILE=/var/run/streamweld-relay/tls.key
 ```
 
-The advertise URL must use `https`, contain no credentials, query, fragment,
-or path, and route directly to the owning replica rather than a load-balanced
-Service. The server certificate must be valid for the advertise hostname. The
-CA must verify every relay peer, and each certificate must be usable for both
-server and client authentication. Relays require TLS 1.3. Files are loaded at
-process startup, so restart a replica to load rotated material. Restrict the
-relay port with network policy even though mutual TLS is mandatory.
+Set either an advertise URL or an unbracketed advertise host, never both. A
+host is converted to an HTTPS URL with the relay listen port using correct
+IPv4 or IPv6 syntax. The result must route directly to the owning replica
+rather than a load-balanced Service. An explicit URL must use `https` and
+contain no credentials, query, fragment, or path. By default, the server
+certificate must be valid for the resulting URL host. Set
+`STREAMWELD_RELAY_TLS_SERVER_NAME` when the directly routable host is a Pod IP
+but the certificate uses a shared DNS identity; certificate verification
+remains mandatory. The CA must verify every relay peer, and each certificate
+must be usable for both server and client authentication. Relays require TLS
+1.3. Files are loaded at process startup, so restart a replica to load rotated
+material. Restrict the relay port with network policy even though mutual TLS is
+mandatory.
 
 The defaults refresh owner presence every `2s` with a `10s` lease. The presence
 TTL must be greater than twice the heartbeat interval. If
 `STREAMWELD_REPLICA_ID` is omitted, the process generates a unique identity at
-startup; an explicit pod identity is easier to correlate operationally.
+startup. If it is set explicitly, it must still change on every process start;
+do not use a stable Pod name or UID that survives a container restart.
 
 For a two-replica local test only, plaintext relay mode is available. Both the
 listen and advertised hosts are required to be loopback addresses:
@@ -265,7 +273,9 @@ variables and then command-line flags. These are the journal and relay settings:
 | `STREAMWELD_REDIS_KEY_PREFIX` | `--redis-key-prefix` | `streamweld`; must be deployment-unique and cannot contain braces or control characters |
 | `STREAMWELD_REPLICA_ID` | `--replica-id` | Generated at startup when omitted |
 | `STREAMWELD_RELAY_LISTEN` | `--relay-listen` | `127.0.0.1:8081`; no listener opens while relay is disabled |
-| `STREAMWELD_RELAY_ADVERTISE_URL` | `--relay-advertise-url` | Unset, which disables the relay |
+| `STREAMWELD_RELAY_ADVERTISE_URL` | `--relay-advertise-url` | Unset; supply this or an advertise host to enable the relay |
+| `STREAMWELD_RELAY_ADVERTISE_HOST` | `--relay-advertise-host` | Unset; mutually exclusive with the URL and derives HTTPS using the relay listen port |
+| `STREAMWELD_RELAY_TLS_SERVER_NAME` | `--relay-tls-server-name` | Advertise URL host; override when directly dialing a Pod IP |
 | `STREAMWELD_RELAY_CA_FILE` | `--relay-ca-file` | Required for a production relay |
 | `STREAMWELD_RELAY_CERT_FILE` | `--relay-cert-file` | Required for a production relay |
 | `STREAMWELD_RELAY_KEY_FILE` | `--relay-key-file` | Required for a production relay; keep the file secret |

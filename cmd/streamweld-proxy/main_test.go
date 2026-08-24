@@ -57,7 +57,8 @@ func TestRunHelp(t *testing.T) {
 	}
 	for _, flagName := range []string{
 		"-journal-backend", "-redis-url", "-redis-key-prefix", "-replica-id",
-		"-relay-listen", "-relay-advertise-url", "-relay-ca-file",
+		"-relay-listen", "-relay-advertise-url", "-relay-advertise-host",
+		"-relay-tls-server-name", "-relay-ca-file",
 		"-relay-cert-file", "-relay-key-file", "-relay-insecure-dev-mode",
 		"-reader-write-timeout",
 	} {

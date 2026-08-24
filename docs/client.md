@@ -1,11 +1,16 @@
 # TypeScript clients
 
-Streamweld ships two publish-ready packages:
+Streamweld ships two public packages:
 
 - `@streamweld/client` is a zero-runtime-dependency client for browsers,
   Node.js 20+, Deno, Bun, and edge runtimes.
 - `@streamweld/ai-sdk` adapts the durable client to Vercel AI SDK v5's
   `ChatTransport` interface.
+
+```sh
+npm install @streamweld/client
+npm install @streamweld/ai-sdk ai@^5
+```
 
 ## Durable client
 

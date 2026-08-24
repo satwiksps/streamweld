@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: streamweld-proxy-chaos-host-ingress
+  namespace: streamweld-system
+  labels:
+    app.kubernetes.io/name: streamweld
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: streamweld
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: streamweld
+      app.kubernetes.io/component: proxy
+      app.kubernetes.io/instance: streamweld
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: __KIND_GATEWAY_CIDR__
+      ports:
+        - port: http
+          protocol: TCP

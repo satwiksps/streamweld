@@ -4,6 +4,10 @@ Dependency-free durable SSE streaming for Streamweld. The package uses only
 web-platform APIs and ships ESM, CommonJS, and TypeScript declarations for
 browsers, Node 20+, Deno, Bun, and edge runtimes.
 
+```sh
+npm install @streamweld/client
+```
+
 ```ts
 import { createDurableStream } from "@streamweld/client";
 

@@ -56,6 +56,7 @@ type relayConfig struct {
 	ReplicaID        string
 	ListenAddress    string
 	AdvertiseURL     string
+	TLSServerName    string
 	CAFile           string
 	CertificateFile  string
 	PrivateKeyFile   string
@@ -170,6 +171,7 @@ func buildRelayTLS(config relayConfig) (*tls.Config, *http.Transport, error) {
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{certificate},
 		RootCAs:      caPool,
+		ServerName:   config.TLSServerName,
 	}
 	return serverTLS, transport, nil
 }

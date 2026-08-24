@@ -71,13 +71,34 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	serviceText := strings.ReplaceAll(string(service), "\r\n", "\n")
-	for _, required := range []string{"type: NodePort", "nodePort: 30080"} {
+	for _, required := range []string{"type: NodePort", "externalTrafficPolicy: Local", "nodePort: 30080"} {
 		if !strings.Contains(serviceText, required) {
 			t.Errorf("chaos proxy Service is missing %q", required)
 		}
 	}
 	if strings.Contains(serviceText, "kind: NetworkPolicy") {
-		t.Fatal("chaos NodePort manifest overrides the production ingress policy")
+		t.Fatal("chaos NodePort manifest embeds the separately scoped host-ingress policy")
+	}
+
+	hostIngress, err := os.ReadFile(filepath.Join("manifests", "proxy-host-ingress.yaml.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostIngressText := strings.ReplaceAll(string(hostIngress), "\r\n", "\n")
+	for _, required := range []string{
+		"name: streamweld-proxy-chaos-host-ingress",
+		"app.kubernetes.io/name: streamweld",
+		"app.kubernetes.io/component: proxy",
+		"app.kubernetes.io/instance: streamweld",
+		"cidr: __KIND_GATEWAY_CIDR__",
+		"port: http",
+	} {
+		if !strings.Contains(hostIngressText, required) {
+			t.Errorf("chaos host-ingress template is missing %q", required)
+		}
+	}
+	if strings.Contains(hostIngressText, "0.0.0.0/0") {
+		t.Fatal("chaos host-ingress policy permits every IPv4 source")
 	}
 
 	runner, err := os.ReadFile("run-kind.sh")
@@ -89,8 +110,12 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 		t.Fatal("kind runner does not install the direct proxy NodePort")
 	}
 	for _, required := range []string{
-		`docker inspect --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}'`,
+		`proxy_node="${worker_nodes[2]#node/}"`,
+		`kubectl get node "$proxy_node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'`,
 		`proxy_url="http://${proxy_node_ip}:30080"`,
+		`kind_gateway="$(docker inspect --format '{{(index .NetworkSettings.Networks "kind").Gateway}}' "$proxy_node")"`,
+		`kind_gateway_cidr="${kind_gateway}/32"`,
+		`sed "s|__KIND_GATEWAY_CIDR__|${kind_gateway_cidr}|"`,
 		`--proxy-url "$proxy_url"`,
 	} {
 		if !strings.Contains(runnerText, required) {
@@ -106,6 +131,19 @@ func TestKindSlowConsumerUsesDirectNodePort(t *testing.T) {
 	} {
 		if !strings.Contains(runnerText, required) {
 			t.Errorf("kind runner is missing bounded proxy TCP send memory %q", required)
+		}
+	}
+	for _, required := range []string{
+		`basicConstraints=critical,CA:FALSE`,
+		`subjectAltName=DNS:streamweld-relay.streamweld-system.svc`,
+		`extendedKeyUsage=serverAuth,clientAuth`,
+		`-verify_hostname streamweld-relay.streamweld-system.svc`,
+		"kubectl create secret generic streamweld-chaos-relay-tls",
+		"--set relay.enabled=true",
+		"--set relay.tls.existingSecret=streamweld-chaos-relay-tls",
+	} {
+		if !strings.Contains(runnerText, required) {
+			t.Errorf("kind runner is missing owner-relay fixture %q", required)
 		}
 	}
 	if strings.Contains(runnerText, "service/streamweld-proxy 18080:8080") {
@@ -206,7 +244,13 @@ func TestKindRunnerPreservesFailureDiagnostics(t *testing.T) {
 		"kind chaos requires Kubernetes >=1.32 for pod-scoped net.ipv4.tcp_wmem",
 		"kind chaos requires Linux >=4.15 for pod-scoped net.ipv4.tcp_wmem",
 		"capture_kubectl resources.txt get all --namespace streamweld-system -o wide",
+		"capture_kubectl services.yaml get services --namespace streamweld-system -o yaml",
+		"capture_kubectl endpointslices.yaml get endpointslices.discovery.k8s.io --namespace streamweld-system -o yaml",
+		"capture_kubectl networkpolicies.yaml get networkpolicies.networking.k8s.io --namespace streamweld-system -o yaml",
 		"capture_kubectl events.txt get events --all-namespaces --sort-by=.lastTimestamp",
+		"capture_kubectl kube-proxy-config.yaml get configmap kube-proxy --namespace kube-system -o yaml",
+		"capture_kubectl kube-proxy.log logs",
+		"capture_kubectl kindnet.log logs",
 		"capture_component_logs proxy app.kubernetes.io/component=proxy",
 		"capture_component_logs operator app.kubernetes.io/component=operator",
 		"capture_component_logs backend app.kubernetes.io/name=streamweld-chaos-backend",

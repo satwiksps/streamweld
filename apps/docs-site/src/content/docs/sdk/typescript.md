@@ -10,6 +10,10 @@ description: Durable async iteration and the Vercel AI SDK v5 transport adapter.
 `@streamweld/client` has no runtime dependency. It supports browsers, Node.js,
 Deno, Bun, and edge runtimes with standard Fetch APIs.
 
+```sh
+npm install @streamweld/client
+```
+
 ```ts
 import { createDurableStream } from '@streamweld/client';
 
@@ -57,6 +61,10 @@ The helper preserves 64-bit cursor values as decimal strings. Applications with
 their own store can pass `resumeFrom: { id, lastEventId }`.
 
 ## Vercel AI SDK v5
+
+```sh
+npm install @streamweld/ai-sdk ai@^5
+```
 
 Change the `useChat` transport:
 
