@@ -284,8 +284,6 @@ jobs:
           test -f "${RUNNER_TEMP}/npm/streamweld-client-${{ needs.quality.outputs.version }}.tgz"
           test -f "${RUNNER_TEMP}/npm/streamweld-ai-sdk-${{ needs.quality.outputs.version }}.tgz"
       - name: Publish client
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           archive="${RUNNER_TEMP}/npm/streamweld-client-${{ needs.quality.outputs.version }}.tgz"
@@ -302,8 +300,6 @@ jobs:
               --tag "${{ needs.quality.outputs.npm_tag }}"
           fi
       - name: Publish AI SDK adapter
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           archive="${RUNNER_TEMP}/npm/streamweld-ai-sdk-${{ needs.quality.outputs.version }}.tgz"
