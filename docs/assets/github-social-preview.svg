@@ -1,45 +1,139 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
-  <title id="title">Streamweld — keep the response</title>
-  <desc id="description">Durable token streams for self-hosted inference through disconnects and eligible backend failures.</desc>
+  <title id="title">Streamweld — LLM streams that resume, not restart</title>
+  <desc id="description">Streamweld journals ordered SSE events so readers can resume after an exact cursor and compatible inference backends can continue the same logical response.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#070b12"/>
-      <stop offset="1" stop-color="#0d1a2b"/>
+      <stop offset="0" stop-color="#09090b"/>
+      <stop offset="1" stop-color="#0b1319"/>
     </linearGradient>
-    <linearGradient id="signal" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#54d6ff"/>
-      <stop offset="1" stop-color="#80f0b5"/>
+    <linearGradient id="rail" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#93c5fd"/>
+      <stop offset="0.5" stop-color="#93c5fd"/>
+      <stop offset="0.5" stop-color="#55e2c2"/>
+      <stop offset="1" stop-color="#55e2c2"/>
     </linearGradient>
-    <filter id="soft-glow" x="-30%" y="-30%" width="160%" height="160%">
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#55e2c2" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#55e2c2" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M56 0H0V56" fill="none" stroke="#f4f7f5" stroke-opacity="0.032"/>
+    </pattern>
+    <filter id="cursor-glow" x="-100%" y="-100%" width="300%" height="300%">
       <feGaussianBlur stdDeviation="4" result="blur"/>
       <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
 
   <rect width="1280" height="640" fill="url(#background)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <circle cx="970" cy="300" r="330" fill="url(#halo)"/>
+  <path d="M0 639.5H1280" stroke="#55e2c2" stroke-opacity="0.3"/>
 
-  <g transform="translate(80 70)" font-family="Inter,Segoe UI,Arial,sans-serif">
-    <rect width="44" height="44" rx="11" fill="#0f1d30" stroke="#31537f"/>
-    <path d="M9 23h8l5-11 8 22 5-11h7" fill="none" stroke="url(#signal)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="60" y="33" fill="#f8fafc" font-size="31" font-weight="700">Streamweld</text>
+  <g font-family="Inter,Segoe UI,Arial,sans-serif">
+    <g transform="translate(72 62)">
+      <rect width="44" height="44" rx="12" fill="#172522" stroke="#55e2c2" stroke-opacity="0.44"/>
+      <text x="22" y="26" fill="#c8fff1" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="12" font-weight="700" text-anchor="middle">SW</text>
+    </g>
+    <text x="132" y="96" fill="#f4f7f5" font-size="31" font-weight="700" letter-spacing="-0.8">Streamweld</text>
+
+    <text x="74" y="190" fill="#93c5fd" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="14" font-weight="700" letter-spacing="1.8">DURABILITY LAYER FOR SELF-HOSTED LLM INFERENCE</text>
+    <text x="72" y="279" fill="#f4f7f5" font-size="57" font-weight="700" letter-spacing="-2.2">LLM streams that</text>
+    <text x="72" y="348" fill="#c8fff1" font-size="57" font-weight="700" letter-spacing="-2.2">resume, not restart.</text>
+
+    <text x="76" y="416" fill="#a7b6b3" font-size="21">Journal every SSE event. Replay after the cursor.</text>
+    <text x="76" y="449" fill="#a7b6b3" font-size="21">Continue on another backend only when safe.</text>
+
+    <g transform="translate(74 518)" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="10" font-weight="700">
+      <rect width="152" height="31" rx="8" fill="#111a20" stroke="#263633"/>
+      <circle cx="21.5" cy="15.5" r="3" fill="#55e2c2"/>
+      <text x="33.5" y="19" fill="#a7b6b3">OPENAI-COMPATIBLE</text>
+      <rect x="162" width="153" height="31" rx="8" fill="#111a20" stroke="#263633"/>
+      <circle cx="184" cy="15.5" r="3" fill="#93c5fd"/>
+      <text x="196" y="19" fill="#a7b6b3">KUBERNETES-NATIVE</text>
+      <rect x="325" width="134" height="31" rx="8" fill="#111a20" stroke="#263633"/>
+      <circle cx="343.5" cy="15.5" r="3" fill="#ff806c"/>
+      <text x="355.5" y="19" fill="#a7b6b3">MEMORY OR REDIS</text>
+    </g>
+    <text x="74" y="590" fill="#6f817f" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="11" letter-spacing="0.8">OPEN SOURCE · GO + TYPESCRIPT · HTTP + SSE</text>
   </g>
 
-  <g transform="translate(80 200)" font-family="Inter,Segoe UI,Arial,sans-serif">
-    <text x="0" y="0" fill="#93c5fd" font-family="SFMono-Regular,Consolas,monospace" font-size="18" font-weight="600" letter-spacing="2.2">DURABLE TOKEN STREAMS FOR SELF-HOSTED INFERENCE</text>
-    <text x="0" y="92" fill="#f8fafc" font-size="72" font-weight="700" letter-spacing="-2.5">Keep the response.</text>
-    <text x="0" y="154" fill="#a8b3c4" font-size="27">Through disconnects and eligible backend failures.</text>
-  </g>
+  <g font-family="Inter,Segoe UI,Arial,sans-serif">
+    <rect x="676" y="54" width="534" height="532" rx="27" fill="#0d171c" stroke="#263633" stroke-width="1.5"/>
+    <path d="M676 119H1210" stroke="#263633"/>
+    <text x="710" y="91" fill="#a7b6b3" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="11" font-weight="700" letter-spacing="1.5">ONE LOGICAL STREAM</text>
+    <rect x="1052" y="72" width="124" height="28" rx="14" fill="#123331" stroke="#55e2c2" stroke-opacity="0.35"/>
+    <circle cx="1080" cy="86" r="3.5" fill="#55e2c2"/>
+    <text x="1092" y="89" fill="#c8fff1" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">RECOVERABLE</text>
 
-  <g transform="translate(844 126)">
-    <rect width="310" height="310" rx="66" fill="#0a1728" stroke="#28485b" stroke-width="2"/>
-    <circle cx="155" cy="155" r="112" fill="none" stroke="#1d3448" stroke-width="2"/>
-    <circle cx="155" cy="155" r="72" fill="none" stroke="#1d3448" stroke-width="2"/>
-    <path d="M36 155H76C96 155 96 110 117 110s21 90 42 90 21-90 42-90 21 45 42 45h31"
-          fill="none" stroke="url(#signal)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#soft-glow)"/>
-    <circle cx="159" cy="200" r="13" fill="#0a1728" stroke="#d7f7ff" stroke-width="5"/>
-    <circle cx="159" cy="200" r="5" fill="#80f0b5"/>
-  </g>
+    <text x="710" y="151" fill="#93c5fd" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="10" font-weight="700" letter-spacing="1.2">01 · EXACT READER RESUME</text>
+    <g font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">
+      <rect x="710" y="171" width="134" height="27" rx="7" fill="#131d24" stroke="#425350"/>
+      <text x="777" y="188" fill="#a7b6b3" text-anchor="middle">READER A</text>
+      <path d="M844 184.5h31" stroke="#ff806c" stroke-width="2" stroke-dasharray="4 4"/>
+      <path d="M883 178l13 13m0-13-13 13" stroke="#ff806c" stroke-width="2.5" stroke-linecap="round"/>
+      <text x="910" y="188" fill="#ff9b8b">DISCONNECTED</text>
+      <rect x="1042" y="171" width="134" height="27" rx="7" fill="#123331" stroke="#55e2c2" stroke-opacity="0.4"/>
+      <text x="1109" y="188" fill="#c8fff1" text-anchor="middle">READER B · LIVE</text>
 
-  <line x1="80" y1="558" x2="1200" y2="558" stroke="#26364e"/>
-  <text x="80" y="598" fill="#94a3b8" font-family="SFMono-Regular,Consolas,monospace" font-size="16">OPENAI-COMPATIBLE  ·  KUBERNETES-NATIVE  ·  MEMORY OR REDIS</text>
+      <rect x="710" y="216" width="164" height="27" rx="7" fill="#123331" stroke="#55e2c2" stroke-opacity="0.35"/>
+      <text x="792" y="233" fill="#c8fff1" text-anchor="middle">LAST-EVENT-ID: 41</text>
+      <text x="943" y="233" fill="#6f817f" text-anchor="middle">EXCLUSIVE CURSOR</text>
+    </g>
+
+    <path d="M740 286H1146" stroke="#263633" stroke-width="6" stroke-linecap="round"/>
+    <path d="M740 286H1146" stroke="url(#rail)" stroke-width="2.5" stroke-linecap="round"/>
+    <g font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="13" font-weight="700" text-anchor="middle">
+      <g fill="#121c24" stroke="#3f5f77">
+        <rect x="711" y="259" width="58" height="54" rx="11"/>
+        <rect x="779" y="259" width="58" height="54" rx="11"/>
+        <rect x="847" y="259" width="58" height="54" rx="11"/>
+      </g>
+      <text x="740" y="290" fill="#dbeafe">39</text>
+      <text x="808" y="290" fill="#dbeafe">40</text>
+      <text x="876" y="290" fill="#dbeafe">41</text>
+      <g fill="#11231f" stroke="#3e8b79">
+        <rect x="981" y="259" width="58" height="54" rx="11"/>
+        <rect x="1049" y="259" width="58" height="54" rx="11"/>
+        <rect x="1117" y="259" width="58" height="54" rx="11"/>
+      </g>
+      <text x="1010" y="290" fill="#c8fff1">42</text>
+      <text x="1078" y="290" fill="#c8fff1">43</text>
+      <text x="1146" y="290" fill="#c8fff1">44</text>
+    </g>
+    <path d="M943 251v70" stroke="#55e2c2" stroke-opacity="0.72" stroke-dasharray="4 5"/>
+    <circle cx="943" cy="286" r="11" fill="#0d171c" stroke="#55e2c2" stroke-width="4" filter="url(#cursor-glow)"/>
+    <circle cx="943" cy="286" r="3" fill="#c8fff1"/>
+    <text x="710" y="337" fill="#93c5fd" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">COMMITTED JOURNAL</text>
+    <text x="1176" y="337" fill="#55e2c2" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700" text-anchor="end">REPLAY → LIVE TAIL</text>
+
+    <path d="M710 367H1176" stroke="#263633"/>
+    <text x="710" y="401" fill="#93c5fd" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="10" font-weight="700" letter-spacing="1.2">02 · GUARDED BACKEND CONTINUATION</text>
+
+    <g>
+      <rect x="710" y="425" width="132" height="72" rx="11" fill="#1b1718" stroke="#ff806c" stroke-opacity="0.35"/>
+      <text x="725" y="449" fill="#a7b6b3" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">ATTEMPT 01</text>
+      <circle cx="725" cy="474" r="4" fill="#ff806c"/>
+      <text x="737" y="479" fill="#ff9b8b" font-size="13" font-weight="600">failed</text>
+
+      <path d="M842 461h31" stroke="#425350" stroke-width="2"/>
+      <path d="m868 456 7 5-7 5" fill="none" stroke="#425350" stroke-width="2"/>
+
+      <rect x="877" y="425" width="132" height="72" rx="11" fill="#111a20" stroke="#425350"/>
+      <text x="892" y="449" fill="#a7b6b3" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">SAFETY GATE</text>
+      <path d="m894 473 6 6 12-15" fill="none" stroke="#55e2c2" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="923" y="479" fill="#c8fff1" font-size="13" font-weight="600">eligible</text>
+
+      <path d="M1009 461h31" stroke="#55e2c2" stroke-width="2"/>
+      <path d="m1035 456 7 5-7 5" fill="none" stroke="#55e2c2" stroke-width="2"/>
+
+      <rect x="1044" y="425" width="132" height="72" rx="11" fill="#11231f" stroke="#55e2c2" stroke-opacity="0.45"/>
+      <text x="1059" y="449" fill="#a7b6b3" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">ATTEMPT 02</text>
+      <circle cx="1059" cy="474" r="4" fill="#55e2c2"/>
+      <text x="1071" y="479" fill="#c8fff1" font-size="13" font-weight="600">continues</text>
+    </g>
+
+    <rect x="710" y="524" width="466" height="35" rx="8" fill="#111a20" stroke="#263633"/>
+    <text x="943" y="544.5" fill="#6f817f" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700" text-anchor="middle">MODEL + TEMPLATE + REQUEST + TOKEN SEAM VERIFIED BEFORE MIGRATION</text>
+  </g>
 </svg>

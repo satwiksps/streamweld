@@ -1,35 +1,91 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 260" role="img" aria-labelledby="title description">
-  <title id="title">Streamweld</title>
-  <desc id="description">Streamweld keeps one token stream continuous through a broken connection.</desc>
+  <title id="title">Streamweld — LLM streams that resume, not restart</title>
+  <desc id="description">An ordered SSE journal keeps events 39 through 44 continuous while a reader disconnects after event 41 and resumes exactly at event 42.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#081225"/>
-      <stop offset="1" stop-color="#102d35"/>
+      <stop offset="0" stop-color="#09090b"/>
+      <stop offset="1" stop-color="#0b1319"/>
     </linearGradient>
-    <linearGradient id="signal" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#54d6ff"/>
-      <stop offset="1" stop-color="#80f0b5"/>
+    <linearGradient id="rail" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#93c5fd"/>
+      <stop offset="0.5" stop-color="#93c5fd"/>
+      <stop offset="0.5" stop-color="#55e2c2"/>
+      <stop offset="1" stop-color="#55e2c2"/>
     </linearGradient>
-    <filter id="soft-glow" x="-30%" y="-30%" width="160%" height="160%">
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#f4f7f5" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="cursor-glow" x="-100%" y="-100%" width="300%" height="300%">
       <feGaussianBlur stdDeviation="3" result="blur"/>
       <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
 
-  <rect width="960" height="260" rx="28" fill="url(#background)"/>
+  <rect width="960" height="260" rx="24" fill="url(#background)"/>
+  <rect width="960" height="260" rx="24" fill="url(#grid)"/>
+  <g font-family="Inter,Segoe UI,Arial,sans-serif">
+    <text x="48" y="74" fill="#f4f7f5" font-size="39" font-weight="700" letter-spacing="-1.4">Streamweld</text>
+    <text x="48" y="120" fill="#a7b6b3" font-size="17">Durable token streams for self-hosted LLM inference.</text>
+    <text x="48" y="157" fill="#93c5fd" font-size="15.5" font-weight="700" letter-spacing="-0.2">LLM streams that resume, not restart.</text>
 
-  <g transform="translate(38 28)">
-    <rect x="0" y="0" width="204" height="204" rx="42" fill="#0a1728" stroke="#28485b" stroke-width="2"/>
-    <circle cx="102" cy="102" r="72" fill="none" stroke="#1d3448" stroke-width="2"/>
-    <circle cx="102" cy="102" r="45" fill="none" stroke="#1d3448" stroke-width="2"/>
-    <path d="M24 102H48C61 102 61 73 75 73S89 131 103 131s14-58 28-58 14 29 28 29h21"
-          fill="none" stroke="url(#signal)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" filter="url(#soft-glow)"/>
-    <circle cx="103" cy="131" r="8" fill="#0a1728" stroke="#d7f7ff" stroke-width="3"/>
-    <circle cx="103" cy="131" r="3" fill="#80f0b5"/>
+    <g transform="translate(48 185)" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="10" font-weight="600">
+      <rect width="142" height="28" rx="7" fill="#111a20" stroke="#263633"/>
+      <circle cx="15" cy="14" r="3" fill="#55e2c2"/>
+      <text x="26" y="18" fill="#a7b6b3">OPENAI HTTP + SSE</text>
+      <rect x="152" width="142" height="28" rx="7" fill="#111a20" stroke="#263633"/>
+      <circle cx="167" cy="14" r="3" fill="#93c5fd"/>
+      <text x="178" y="18" fill="#a7b6b3">KUBERNETES NATIVE</text>
+    </g>
   </g>
 
-  <g transform="translate(282 65)" font-family="Inter,Segoe UI,Arial,sans-serif">
-    <text x="0" y="60" fill="#f5fbff" font-size="68" font-weight="700" letter-spacing="-2">Streamweld</text>
-    <text x="4" y="108" fill="#96b8c6" font-family="SFMono-Regular,Consolas,monospace" font-size="22" font-weight="600" letter-spacing="2">ONE RESPONSE. EXACT RESUME.</text>
+  <g font-family="Inter,Segoe UI,Arial,sans-serif">
+    <rect x="490" y="28" width="422" height="204" rx="18" fill="#0d171c" stroke="#263633"/>
+    <text x="514" y="56" fill="#a7b6b3" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="10" font-weight="700" letter-spacing="1.3">EXACT READER RESUME</text>
+    <text x="836" y="56" fill="#a7b6b3" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="10" font-weight="700" letter-spacing="1.3" text-anchor="middle">SAME STREAM</text>
+
+    <g font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">
+      <rect x="514" y="78" width="104" height="24" rx="7" fill="#131d24" stroke="#425350"/>
+      <text x="566" y="93" fill="#a7b6b3" text-anchor="middle">READER A</text>
+      <path d="M618 90h20" stroke="#ff806c" stroke-width="2" stroke-dasharray="4 4"/>
+      <path d="M645 84l12 12m0-12-12 12" stroke="#ff806c" stroke-width="2.5" stroke-linecap="round"/>
+      <text x="664" y="93" fill="#ff9b8b">SOCKET DROPPED</text>
+      <rect x="784" y="78" width="104" height="24" rx="7" fill="#123331" stroke="#55e2c2" stroke-opacity="0.42"/>
+      <text x="836" y="93" fill="#c8fff1" text-anchor="middle">READER B</text>
+    </g>
+
+    <path d="M549 133H853" stroke="#263633" stroke-width="5" stroke-linecap="round"/>
+    <path d="M549 133H853" stroke="url(#rail)" stroke-width="2" stroke-linecap="round"/>
+
+    <g font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="12" font-weight="700" text-anchor="middle">
+      <g fill="#121c24" stroke="#3f5f77">
+        <rect x="527" y="113" width="44" height="40" rx="9"/>
+        <rect x="579" y="113" width="44" height="40" rx="9"/>
+        <rect x="631" y="113" width="44" height="40" rx="9"/>
+      </g>
+      <text x="549" y="137" fill="#dbeafe">39</text>
+      <text x="601" y="137" fill="#dbeafe">40</text>
+      <text x="653" y="137" fill="#dbeafe">41</text>
+      <g fill="#11231f" stroke="#3e8b79">
+        <rect x="727" y="113" width="44" height="40" rx="9"/>
+        <rect x="779" y="113" width="44" height="40" rx="9"/>
+        <rect x="831" y="113" width="44" height="40" rx="9"/>
+      </g>
+      <text x="749" y="137" fill="#c8fff1">42</text>
+      <text x="801" y="137" fill="#c8fff1">43</text>
+      <text x="853" y="137" fill="#c8fff1">44</text>
+    </g>
+
+    <path d="M701 108v50" stroke="#55e2c2" stroke-opacity="0.7" stroke-dasharray="3 4"/>
+    <circle cx="701" cy="133" r="8" fill="#0d171c" stroke="#55e2c2" stroke-width="3" filter="url(#cursor-glow)"/>
+    <circle cx="701" cy="133" r="2.5" fill="#c8fff1"/>
+
+    <g font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9" font-weight="700">
+      <text x="514" y="177" fill="#93c5fd">COMMITTED JOURNAL</text>
+      <rect x="646" y="163" width="110" height="22" rx="6" fill="#123331" stroke="#55e2c2" stroke-opacity="0.35"/>
+      <text x="701" y="177" fill="#c8fff1" text-anchor="middle">LAST-EVENT-ID: 41</text>
+      <text x="888" y="177" fill="#55e2c2" text-anchor="end">REPLAY → LIVE TAIL</text>
+    </g>
+    <path d="M514 199H888" stroke="#263633"/>
+    <text x="514" y="218" fill="#6f817f" font-family="SFMono-Regular,Cascadia Code,Consolas,monospace" font-size="9">THE CONNECTION CHANGED. THE ORDERED RESPONSE DID NOT.</text>
   </g>
 </svg>

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Streamweld — one generation, exact resume](https://raw.githubusercontent.com/satwiksps/streamweld/main/docs/assets/streamweld.svg)
+![Streamweld — LLM streams that resume, not restart](https://raw.githubusercontent.com/satwiksps/streamweld/main/docs/assets/streamweld.svg)
 
 Durable token streams for self-hosted LLM inference.
 
