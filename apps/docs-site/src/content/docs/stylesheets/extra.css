@@ -50,7 +50,7 @@ body {
   letter-spacing: -0.02em;
 }
 
-.md-header__title {
+.md-header__title .md-header__topic {
   display: none;
 }
 
