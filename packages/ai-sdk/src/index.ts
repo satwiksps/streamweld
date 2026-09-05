@@ -249,13 +249,42 @@ export class StreamweldChatTransport<
     return this.#toUIMessageStream(options.chatId, active);
   }
 
-  /** Explicitly stops generation on the Streamweld server. */
+  /** Explicitly stops an active or persisted generation on the Streamweld server. */
   async stop(chatId: string): Promise<StoppedOutcome> {
     const active = this.#active.get(chatId);
-    if (active === undefined) {
+    if (active !== undefined) return active.stream.stop();
+
+    const checkpoint = this.#checkpoint(chatId);
+    if (checkpoint === null || checkpoint.streamId === "") {
       throw new NoActiveStreamError(chatId);
     }
-    return active.stream.stop();
+    const headers = await this.#requestHeaders();
+    const credentials = await resolve(this.#credentials);
+    const detached = new AbortController();
+    detached.abort();
+    // A detached client never opens an events reader. Its independent stop
+    // request still provides the normal response validation and timeout.
+    const stream = createDurableStream(compactDurableOptions({
+      url: this.#api,
+      resumeFrom: { id: checkpoint.streamId },
+      headers,
+      credentials,
+      signal: detached.signal,
+      fetch: this.#fetch,
+    }));
+    const outcome = await stream.stop();
+
+    // A new local attachment owns its cleanup. Shared persistence may also
+    // have changed in another tab while the request was in flight.
+    if (!this.#active.has(chatId)) {
+      if (this.#memory.get(chatId)?.streamId === checkpoint.streamId) {
+        this.#memory.delete(chatId);
+      }
+      if (this.#persistence?.get(chatId)?.streamId === checkpoint.streamId) {
+        this.#persistence.remove(chatId);
+      }
+    }
+    return outcome;
   }
 
   #checkpoint(chatId: string): StreamweldChatCheckpoint | null {

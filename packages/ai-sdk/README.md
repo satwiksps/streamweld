@@ -54,6 +54,13 @@ A stopped UI stream also emits a transient `data-streamweld` chunk before its
 normal text-end/finish sequence, so `onData` can distinguish it from model
 completion.
 
+With a `StreamweldChatPersistence` implementation, `stop(chatId)` also works
+immediately after a reload, before reconnecting. It uses the saved stream ID
+and current configured headers and credentials to send only the stop request.
+A successful saved stop removes that generation's checkpoint; a failed request
+keeps it available for retry. A newer generation's checkpoint is preserved if
+the chat changes while the stop request is pending.
+
 For reload-safe resume, provide a `StreamweldChatPersistence` implementation.
 It stores the mapping from AI SDK `chatId` to Streamweld stream identity and
 cursor; the two IDs are not interchangeable. AI SDK v5 does not give a
