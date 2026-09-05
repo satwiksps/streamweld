@@ -12,11 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/satwiksps/streamweld/internal/conformance"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -24,8 +24,6 @@ const (
 	defaultDrainTimeout  = 15 * time.Second
 	maxDrainResponse     = 64 << 10
 )
-
-var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -87,8 +85,8 @@ func runDrain(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	pod := flags.Arg(0)
-	if !dnsLabelPattern.MatchString(*namespace) || !dnsLabelPattern.MatchString(pod) {
-		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: namespace and Pod must be canonical DNS labels")
+	if len(validation.IsDNS1123Label(*namespace)) != 0 || len(validation.IsDNS1123Subdomain(pod)) != 0 {
+		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: namespace must be a DNS label and Pod must be a DNS subdomain")
 		return 2
 	}
 	if *timeout <= 0 {
@@ -126,6 +124,7 @@ func runDrain(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if result.PodNamespace != *namespace || result.PodName != pod || result.ProxyCount < 0 || result.InFlight < 0 ||
+		(result.State == "drained" && result.ProxyCount == 0) ||
 		(result.State != "drained" && result.State != "draining") {
 		_, _ = fmt.Fprintln(stderr, "streamweldctl drain: operator returned an inconsistent result")
 		return 1

@@ -93,13 +93,14 @@ func (server *OperatorDrainServer) Ready(*http.Request) error {
 	return errors.New("operator drain listener has not started")
 }
 
-// ServeHTTP handles POST /internal/backends/by-pod/{namespace}/{name}/drain.
+// ServeHTTP handles the Kubernetes HTTPGet lifecycle hook and the CLI's POST
+// at /internal/backends/by-pod/{namespace}/{name}/drain.
 func (server *OperatorDrainServer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
-	if request.Method != http.MethodPost {
-		writer.Header().Set("Allow", http.MethodPost)
-		writeDrainError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is supported")
+	if request.Method != http.MethodGet && request.Method != http.MethodPost {
+		writer.Header().Set("Allow", "GET, POST")
+		writeDrainError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and POST are supported")
 		return
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, maxDrainRequestBytes)

@@ -67,6 +67,9 @@ func TestDrainRejectsUnsafeArgumentsLocally(t *testing.T) {
 	tests := [][]string{
 		{"drain"},
 		{"drain", "--namespace", "Bad", "pod-a"},
+		{"drain", "--namespace", strings.Repeat("a", 64), "pod-a"},
+		{"drain", strings.Repeat("a", 254)},
+		{"drain", "pod..a"},
 		{"drain", "--endpoint", "http://user:secret@example.test", "pod-a"},
 		{"drain", "--timeout", "0s", "pod-a"},
 	}
@@ -75,5 +78,36 @@ func TestDrainRejectsUnsafeArgumentsLocally(t *testing.T) {
 		if code := run(args, &stdout, &stderr); code != 2 {
 			t.Errorf("run(%v) = %d, stderr=%q", args, code, stderr.String())
 		}
+	}
+}
+
+func TestDrainAcceptsKubernetesDNSSubdomainPodName(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/internal/backends/by-pod/models/pod.a/drain" {
+			t.Errorf("request path = %q", request.URL.Path)
+		}
+		_ = json.NewEncoder(writer).Encode(drainResult{
+			PodNamespace: "models", PodName: "pod.a", ProxyCount: 1, State: "drained",
+		})
+	}))
+	t.Cleanup(server.Close)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"drain", "--endpoint", server.URL, "--namespace", "models", "pod.a"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(drain dotted Pod) = %d, stderr=%q", code, stderr.String())
+	}
+}
+
+func TestDrainRejectsSuccessWithoutAnyProxyAcknowledgement(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(writer).Encode(drainResult{
+			PodNamespace: "default", PodName: "pod-a", ProxyCount: 0, State: "drained",
+		})
+	}))
+	t.Cleanup(server.Close)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"drain", "--endpoint", server.URL, "pod-a"}, &stdout, &stderr); code != 1 || stdout.Len() != 0 {
+		t.Fatalf("run(drain without proxies) = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
