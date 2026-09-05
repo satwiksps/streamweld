@@ -799,6 +799,9 @@ an upper bound for eligibility and remaining-token calculations and emits one
 `estimated: true`. An estimate may refuse migration early but MUST NOT allow a
 request past a configured token ceiling.
 
+If an earlier attempt contributes estimated usage, the cumulative usage remains
+`estimated: true` even when later attempts report exact attempt-local counts.
+
 `rescued_tokens` is the completion-token count already accepted before a
 migration. The telemetry series uses the same value and exposes estimated
 accounting in structured logs so estimates are not presented as measured
@@ -860,6 +863,16 @@ The first continuation output is not journaled immediately. Streamweld buffers
 complete SSE frames until it has at least `policy.seam_window` content bytes,
 or until the attempt terminates if it produces fewer. If the boundary falls
 inside a UTF-8 rune, buffering continues through that rune.
+
+Producer failure also ends this buffering period. Complete buffered frames are
+reconciled and committed before another migration is evaluated, preserving their
+text, usage, and tool-call boundaries. An incomplete final SSE frame is excluded.
+
+The proxy bounds held frames, including SSE metadata and a per-frame allowance,
+using the larger of `STREAMWELD_MAX_SSE_EVENT_BYTES` (default `1MiB`) and the seam
+window. If a continuation exceeds that bound before filling the text window, it
+receives warning `unsupported_continuation_shape` and terminal error
+`migration_refused`.
 
 Let `held` be at most the configured leading window at UTF-8 boundaries.
 Find the longest byte suffix of `accumulated_text`, also at UTF-8 boundaries,
@@ -939,11 +952,16 @@ An empty proxy discovery result or any failed acknowledgement is fail-closed
 with `503 Service Unavailable`. A completed fan-out with remaining streams is
 `504 Gateway Timeout` and reports the aggregate `in_flight` count. Marks already
 accepted by individual replicas remain draining, and retrying the barrier is
-safe. The operator listener has no application bearer token because Kubernetes
-HTTP lifecycle hooks cannot add one; it MUST remain isolated by namespace
-NetworkPolicy and MUST NOT be publicly exposed.
+safe. The operator also accepts an empty-body `GET` for Kubernetes `httpGet`
+lifecycle hooks. It has no application bearer token because lifecycle headers
+cannot reference Secrets, and embedding the admin token in each Pod
+specification would expose that credential. The listener MUST remain isolated
+by namespace NetworkPolicy and MUST NOT be publicly exposed.
 
 Managed backend pods receive a `preStop` hook that calls the operator Service.
+HTTP lifecycle hooks run from kubelet on the node, so node DNS and networking
+must reach the configured Service. The complete fanout shares a deadline of
+the configured drain timeout plus two seconds for responses.
 Manual `streamweldctl drain --namespace <namespace> <pod>` calls the identical
 barrier. Deployments using this protocol can use
 `terminationGracePeriodSeconds: 15`; the hook timeout must leave enough time

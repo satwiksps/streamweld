@@ -56,8 +56,8 @@ spec:
       {{- include "streamweld.operatorSelectorLabels" . | nindent 6 }}
   policyTypes: ["Ingress"]
   ingress:
-    # Backend preStop hooks have no bearer-token facility. Limit the drain
-    # listener (and operator metrics) to workloads in the release namespace.
+    # HTTP lifecycle headers cannot reference Secrets. Keep the hook's
+    # unauthenticated drain listener and metrics in the release namespace.
     - from:
         - namespaceSelector:
             matchLabels:

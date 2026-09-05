@@ -7,6 +7,19 @@ durable OpenAI-compatible stream protocol.
 npm install @streamweld/ai-sdk ai@^5
 ```
 
+When TypeScript checks dependency declarations (`skipLibCheck: false`), the
+tested `ai@5.0.244` release also needs its referenced JSON Schema and Node types:
+
+```sh
+npm install --save-dev @types/json-schema @types/node
+```
+
+For the `useChat` example, also install the v2 integration in your React app:
+
+```sh
+npm install @ai-sdk/react@^2
+```
+
 ```ts
 import { useChat } from "@ai-sdk/react";
 import { StreamweldChatTransport } from "@streamweld/ai-sdk";
@@ -23,6 +36,8 @@ const chat = useChat({ transport, resume: true });
 The transport maps text-only AI SDK `UIMessage` objects to OpenAI chat messages
 and returns AI SDK UI message chunks. It rejects file, reasoning, data, and tool
 parts instead of silently dropping or stringifying them.
+Unsupported response payloads also fail explicitly and detach the local reader;
+the saved generation remains available for reconnection or explicit stop.
 
 ## Stop is not disconnect
 
@@ -54,3 +69,26 @@ enters its error state, and invokes `onError`. A preceding transient
 
 The package has one runtime dependency, `@streamweld/client`. Vercel's `ai`
 package is a v5 peer dependency and is used only for its transport/message types.
+
+## AI SDK dependency overrides
+
+AI SDK v5's provider utilities install Undici 5.x. For npm applications, add
+this override to your application's `package.json` and run `npm install`:
+
+```json
+{
+  "overrides": {
+    "@ai-sdk/provider-utils": {
+      "undici": "6.28.0"
+    }
+  }
+}
+```
+
+This matches the repository's pnpm override. With `ai@5.0.253`, the installed
+adapter passed its HTTP streaming checks with this override, and `npm audit`
+reported no high or moderate advisories. A low-severity
+[provider-utils resource-consumption advisory](https://github.com/advisories/GHSA-866g-f22w-33x8)
+remains without a published v3 fix. It affects AI SDK JSON response handlers;
+this adapter uses the durable client's Fetch implementation. Applications
+using other AI SDK provider operations should assess that advisory separately.

@@ -113,6 +113,15 @@ frames do not keep a disconnected stream retrying indefinitely.
 
 ## Vercel AI SDK v5
 
+See the [adapter installation notes](../packages/ai-sdk/README.md) for strict
+TypeScript declaration dependencies and the tested npm dependency override.
+
+For React's `useChat`, install the compatible v2 integration:
+
+```sh
+npm install @ai-sdk/react@^2
+```
+
 Replace the transport in an existing `useChat` call:
 
 ```ts
