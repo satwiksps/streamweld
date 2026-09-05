@@ -73,3 +73,30 @@ func TestStreamProgressUsesExactOrConservativeUsage(t *testing.T) {
 		t.Fatalf("exact snapshot = %#v", usage)
 	}
 }
+
+func TestStreamProgressPreservesEstimatesAcrossAttempts(t *testing.T) {
+	t.Parallel()
+
+	var progress streamProgress
+	progress.Apply(chunkObservation{TextDelta: "hello"})
+	progress.BeginAttempt()
+	progress.Apply(chunkObservation{
+		TextDelta: " world",
+		Usage:     &tokenUsage{PromptTokens: 11, CompletionTokens: 2, TotalTokens: 13},
+	})
+	text, usage := progress.Snapshot()
+	if text != "hello world" || usage.PromptTokens != 11 || usage.CompletionTokens != 7 ||
+		usage.TotalTokens != 18 || !usage.Estimated {
+		t.Fatalf("usage including an estimated earlier attempt = (%q, %#v)", text, usage)
+	}
+
+	progress.BeginAttempt()
+	progress.Apply(chunkObservation{
+		TextDelta: "!",
+		Usage:     &tokenUsage{PromptTokens: 12, CompletionTokens: 1, TotalTokens: 13},
+	})
+	_, usage = progress.Snapshot()
+	if usage.PromptTokens != 23 || usage.CompletionTokens != 8 || usage.TotalTokens != 31 || !usage.Estimated {
+		t.Fatalf("usage after another measured attempt = %#v", usage)
+	}
+}

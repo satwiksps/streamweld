@@ -272,9 +272,35 @@ func (r *streamRuntime) runAttempt(
 
 	frames := make([]bufferedAttemptFrame, 0, 4)
 	var continuationText []byte
+	var bufferedBytes int64
+	maxBufferBytes := int64(max(r.service.config.MaxSSEEventBytes, r.policy.SeamWindowBytes))
+	flushContinuation := func() bool {
+		if !spec.continuation || len(frames) == 0 {
+			return true
+		}
+		if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
+			if context.Cause(r.context) == nil {
+				r.service.logger.Error("reconcile continuation seam", "stream_id", r.id, "error", err)
+				r.recordMigrationRefusal("unsupported_continuation_shape")
+				_ = r.finishError("migration_refused", "continuation seam could not be reconciled", "unsupported_continuation_shape")
+			}
+			return false
+		}
+		frames = nil
+		continuationText = nil
+		spec.continuation = false
+		signal(producerStartResult{})
+		return true
+	}
 	for {
 		event, decodeErr := decoder.Decode()
 		if decodeErr != nil {
+			// A failed attempt may have produced fewer text bytes than the seam
+			// window. Commit its complete frames before evaluating the next
+			// migration so text, usage, and tool-call boundaries are retained.
+			if context.Cause(r.context) == nil && !flushContinuation() {
+				return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
+			}
 			return r.outcomeForAttemptError(attemptContext, classifyReadFailure(decodeErr))
 		}
 		if !event.HasData {
@@ -282,14 +308,8 @@ func (r *streamRuntime) runAttempt(
 		}
 		resetStall()
 		if bytes.Equal(bytes.TrimSpace(event.Data), []byte(doneSentinelData)) {
-			if spec.continuation {
-				if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
-					r.service.logger.Error("reconcile continuation seam", "stream_id", r.id, "error", err)
-					r.recordMigrationRefusal("unsupported_continuation_shape")
-					_ = r.finishError("migration_refused", "continuation seam could not be reconciled", "unsupported_continuation_shape")
-					return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
-				}
-				signal(producerStartResult{})
+			if !flushContinuation() {
+				return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
 			}
 			if closeErr := r.finishDone(); closeErr != nil {
 				return attemptOutcome{err: closeErr}
@@ -300,12 +320,18 @@ func (r *streamRuntime) runAttempt(
 
 		observation, observeErr := observeOpenAIChunk(event.Data)
 		if observeErr != nil {
+			if !flushContinuation() {
+				return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
+			}
 			if closeErr := r.finishError("upstream_error", "upstream emitted an invalid chunk", "invalid_chunk"); closeErr != nil {
 				return attemptOutcome{err: errors.Join(observeErr, closeErr)}
 			}
 			return attemptOutcome{terminal: true, trigger: "invalid_chunk"}
 		}
 		if len(observation.ErrorPayload) != 0 {
+			if !flushContinuation() {
+				return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
+			}
 			return attemptOutcome{trigger: "error_chunk", passive: true}
 		}
 
@@ -313,17 +339,26 @@ func (r *streamRuntime) runAttempt(
 			frames = append(frames, bufferedAttemptFrame{event: event, observation: observation})
 			continuationText = append(continuationText, observation.TextDelta...)
 			if len(continuationText) < r.policy.SeamWindowBytes {
+				// Textless metadata and tool deltas must not grow the seam
+				// buffer indefinitely. Include retained metadata and a frame
+				// allowance so tiny data payloads cannot bypass this bound.
+				bufferedBytes += int64(len(event.Data)+len(event.Type)+len(event.ID)+len(observation.TextDelta)) + 256
+				for _, comment := range event.Comments {
+					bufferedBytes += int64(len(comment)) + 16
+				}
+				if bufferedBytes > maxBufferBytes {
+					r.recordMigrationRefusal("unsupported_continuation_shape")
+					_ = r.appendNonTerminal([]journal.Entry{warningEntry(
+						"unsupported_continuation_shape", "continuation exceeded the seam buffering limit before producing enough text", nil,
+					)})
+					_ = r.finishError("migration_refused", "continuation seam buffer exceeded its limit", "unsupported_continuation_shape")
+					return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
+				}
 				continue
 			}
-			if err := r.flushSeam(spec.seamBase, frames, continuationText); err != nil {
-				r.recordMigrationRefusal("unsupported_continuation_shape")
-				_ = r.finishError("migration_refused", "continuation seam could not be reconciled", "unsupported_continuation_shape")
+			if !flushContinuation() {
 				return attemptOutcome{terminal: true, trigger: "unsupported_continuation_shape"}
 			}
-			frames = nil
-			continuationText = nil
-			spec.continuation = false
-			signal(producerStartResult{})
 			continue
 		}
 

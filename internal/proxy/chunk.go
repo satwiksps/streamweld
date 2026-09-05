@@ -87,6 +87,7 @@ type streamProgress struct {
 	toolCall              bool
 	attemptCompletionBase uint64
 	attemptPromptBase     uint64
+	attemptBaseEstimated  bool
 	textBytesAtUsage      int
 }
 
@@ -102,7 +103,7 @@ func (p *streamProgress) Apply(observation chunkObservation) {
 			p.usage.PromptTokens = prompt
 		}
 		p.usage.TotalTokens = p.usage.PromptTokens + p.usage.CompletionTokens
-		p.usage.Estimated = false
+		p.usage.Estimated = p.attemptBaseEstimated || observation.Usage.Estimated
 		p.exactUsage = true
 		p.textBytesAtUsage = len(p.text)
 	}
@@ -131,6 +132,7 @@ func (p *streamProgress) BeginAttempt() {
 	p.usage = usage
 	p.attemptCompletionBase = usage.CompletionTokens
 	p.attemptPromptBase = usage.PromptTokens
+	p.attemptBaseEstimated = usage.Estimated
 	p.textBytesAtUsage = len(p.text)
 	p.exactUsage = !usage.Estimated
 }
