@@ -1,6 +1,6 @@
 {
   "name": "@streamweld/ai-sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Vercel AI SDK v5 transport adapter for Streamweld",
   "keywords": [
     "ai-sdk",

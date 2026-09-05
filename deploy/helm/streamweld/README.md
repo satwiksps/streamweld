@@ -8,7 +8,7 @@ published chart from GitHub Container Registry:
 helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
   --namespace streamweld-system \
   --create-namespace \
-  --version 1.0.0 \
+  --version 1.0.1 \
   --wait --timeout 3m
 ```
 
