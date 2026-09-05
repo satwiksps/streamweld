@@ -81,6 +81,7 @@ helm upgrade --install streamweld deploy/helm/streamweld \
   --set proxy.image.tag=e2e \
   --set proxy.image.pullPolicy=Never \
   --set proxy.backendURL=http://streamweld-sample-backend:8000 \
+  --set migration.stallDetection.enabled=false \
   --set journal.backend=redis \
   --set redis.enabled=true \
   --set operator.image.repository=streamweld-operator \
