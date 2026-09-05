@@ -35,6 +35,20 @@ data:
         seen = [int(value) for value in TOKEN_PATTERN.findall(content)]
         return max(seen) + 1 if seen else 0
 
+    def hold_original_for_rollout_test(request, start):
+        if start != 0:
+            return False
+        messages = request.get("messages")
+        if not isinstance(messages, list):
+            return False
+        return any(
+            isinstance(message, dict)
+            and message.get("role") == "user"
+            and isinstance(message.get("content"), str)
+            and message["content"].startswith("streamweld-e2e:rolling-update:")
+            for message in messages
+        )
+
     def conformance_output(request):
         messages = request.get("messages")
         if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):
@@ -126,6 +140,14 @@ data:
                     }
                     self.wfile.write(b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n")
                     self.wfile.flush()
+                    if completion_tokens == 1 and hold_original_for_rollout_test(request, start):
+                        # Reserved e2e marker: keep the original in flight until
+                        # the proxy detaches during rollout. Continuations bypass
+                        # this gate, independent of replacement pod startup time.
+                        self.close_connection = True
+                        while self.connection.recv(1):
+                            pass
+                        return
                     time.sleep(TOKEN_DELAY)
                 terminal = {
                     "id": "chatcmpl-deterministic",

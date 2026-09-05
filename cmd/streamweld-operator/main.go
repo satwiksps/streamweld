@@ -20,6 +20,7 @@ import (
 	"github.com/satwiksps/streamweld/controllers"
 	"github.com/satwiksps/streamweld/internal/apis/v1alpha1"
 	"github.com/satwiksps/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/version"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -33,6 +34,7 @@ import (
 const maxCredentialFileBytes = 1 << 20
 
 type operatorOptions struct {
+	showVersion             bool
 	metricsAddress          string
 	healthAddress           string
 	leaderElection          bool
@@ -59,10 +61,10 @@ type operatorOptions struct {
 }
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(arguments []string, stderr io.Writer) int {
+func run(arguments []string, stdout, stderr io.Writer) int {
 	options, help, err := parseOptions(arguments, stderr)
 	if help {
 		return 0
@@ -71,6 +73,13 @@ func run(arguments []string, stderr io.Writer) int {
 	if err != nil {
 		logger.Error("invalid operator configuration", "error", err)
 		return 2
+	}
+	if options.showVersion {
+		if err := version.Current().Write(stdout, "streamweld-operator"); err != nil {
+			logger.Error("write version", "error", err)
+			return 1
+		}
+		return 0
 	}
 	ctrl.SetLogger(logr.FromSlogHandler(logger.Handler()))
 
@@ -212,6 +221,7 @@ func parseOptions(arguments []string, stderr io.Writer) (operatorOptions, bool, 
 	}
 	flags := flag.NewFlagSet("streamweld-operator", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	flags.BoolVar(&options.showVersion, "version", false, "print version, commit, and commit date, then exit")
 	flags.StringVar(&options.metricsAddress, "metrics-bind-address", options.metricsAddress, "metrics listener address; 0 disables")
 	flags.StringVar(&options.healthAddress, "health-probe-bind-address", options.healthAddress, "health and readiness listener address")
 	flags.BoolVar(&options.leaderElection, "leader-elect", options.leaderElection, "enable Kubernetes leader election")
@@ -247,6 +257,9 @@ func parseOptions(arguments []string, stderr io.Writer) (operatorOptions, bool, 
 	}
 	if flags.NArg() != 0 {
 		return options, false, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if options.showVersion {
+		return options, false, nil
 	}
 	if err := options.validate(); err != nil {
 		return options, false, err

@@ -70,7 +70,6 @@ func TestBackendRolloutLosesNoDeterministicStreams(t *testing.T) {
 
 	want := deterministicOutput(e2eTokens)
 	streamIDs := make(map[string]struct{}, e2eStreams)
-	totalMigrations := 0
 	for range e2eStreams {
 		select {
 		case result := <-results:
@@ -79,7 +78,13 @@ func TestBackendRolloutLosesNoDeterministicStreams(t *testing.T) {
 				continue
 			}
 			if result.output != want {
-				t.Errorf("stream %d output is not the canonical %d-token sequence: got %d bytes, want %d", result.index, e2eTokens, len(result.output), len(want))
+				offset := 0
+				for offset < len(result.output) && offset < len(want) && result.output[offset] == want[offset] {
+					offset++
+				}
+				t.Errorf("stream %d (%s, %d migrations) output is not the canonical %d-token sequence: got %d bytes, want %d; first difference at byte %d: got %q, want %q",
+					result.index, result.streamID, result.migrations, e2eTokens, len(result.output), len(want), offset,
+					result.output[offset:min(offset+80, len(result.output))], want[offset:min(offset+80, len(want))])
 			}
 			if result.streamID == "" {
 				t.Errorf("stream %d omitted X-Streamweld-Stream-Id", result.index)
@@ -88,13 +93,12 @@ func TestBackendRolloutLosesNoDeterministicStreams(t *testing.T) {
 			} else {
 				streamIDs[result.streamID] = struct{}{}
 			}
-			totalMigrations += result.migrations
+			if result.migrations == 0 {
+				t.Errorf("stream %d (%s) completed rollout without a visible migration event", result.index, result.streamID)
+			}
 		case <-ctx.Done():
 			t.Fatalf("streams did not finish after rollout: %v", ctx.Err())
 		}
-	}
-	if totalMigrations == 0 {
-		t.Fatal("rollout completed without a visible migration event")
 	}
 }
 
@@ -121,9 +125,11 @@ func consumeDeterministicStream(
 	index int,
 	onFirstChunk func(),
 ) (string, string, int, error) {
+	// The sample backend holds only marked original attempts after token-000.
+	// Every reader is attached before rollout; continuation requests finish normally.
 	body, err := json.Marshal(map[string]any{
 		"model":       "streamweld/deterministic-vllm",
-		"messages":    []map[string]string{{"role": "user", "content": fmt.Sprintf("deterministic rollout stream %d", index)}},
+		"messages":    []map[string]string{{"role": "user", "content": fmt.Sprintf("streamweld-e2e:rolling-update:%d", index)}},
 		"stream":      true,
 		"temperature": 0,
 		"max_tokens":  e2eTokens,

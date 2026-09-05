@@ -9,6 +9,7 @@ const (
 	FailureToolCallBoundary             CorrectnessFailure = "tool_call_boundary"
 	FailureStructuredPrefixInvalid      CorrectnessFailure = "structured_prefix_invalid"
 	FailureUnsupportedContinuationShape CorrectnessFailure = "unsupported_continuation_shape"
+	FailureTokenBudgetExhausted         CorrectnessFailure = "token_budget_exhausted"
 )
 
 // CorrectnessSnapshot captures the correctness state at one migration point.

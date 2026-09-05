@@ -429,11 +429,8 @@ func (r *streamRuntime) prepareMigration(
 	migrationsUsed := r.migrationsUsed
 	createdAt := r.createdAt
 	estimateWarning := usage.Estimated && !r.estimateWarned
+	finishReason := r.finishReason
 	r.mu.Unlock()
-
-	if passive {
-		_, _ = r.service.backends.MarkPassiveFailure(failedBackend.ID)
-	}
 
 	correctness := migrate.EvaluateCorrectness(migrate.CorrectnessSnapshot{
 		ToolCallInProgress: insideToolCall,
@@ -441,6 +438,31 @@ func (r *streamRuntime) prepareMigration(
 		AccumulatedText:    []byte(accumulated),
 		MultipleChoices:    r.multipleChoice,
 	})
+
+	// A completed choice or an exact exhausted budget needs no new producer.
+	// Resolve this before target selection: a rollout can interrupt the small
+	// window between the final token/finish reason and the [DONE] sentinel.
+	rewritten, rewriteErr := migrate.RewriteContinuation(r.requestKind, r.requestBody, migrate.ContinuationOptions{
+		AccumulatedText:      accumulated,
+		TokensAlreadyEmitted: usage.CompletionTokens,
+	})
+	if completedReason, completed := completedGenerationReason(finishReason, usage, correctness, rewriteErr); completed {
+		if err := r.finishDoneUntil(deadline, completedReason); err != nil && !errors.Is(err, journal.ErrTerminalState) {
+			r.service.logger.Error("close completed generation", "stream_id", r.id, "error", err)
+		}
+		return attemptSpec{}, false
+	}
+	if passive {
+		_, _ = r.service.backends.MarkPassiveFailure(failedBackend.ID)
+	}
+	if errors.Is(rewriteErr, migrate.ErrTokenBudgetExhausted) {
+		if !correctness.Eligible() {
+			r.refuseMigrationUntil(deadline, estimateWarning, nil, correctness.Failures)
+		} else {
+			r.refuseMigrationUntil(deadline, estimateWarning, nil, []migrate.CorrectnessFailure{migrate.FailureTokenBudgetExhausted})
+		}
+		return attemptSpec{}, false
+	}
 
 	policy := migrate.Policy{
 		MaxMigrations:         uint64(r.policy.MaxMigrations),
@@ -525,10 +547,6 @@ func (r *streamRuntime) prepareMigration(
 		return attemptSpec{}, false
 	}
 
-	rewritten, rewriteErr := migrate.RewriteContinuation(r.requestKind, r.requestBody, migrate.ContinuationOptions{
-		AccumulatedText:      accumulated,
-		TokensAlreadyEmitted: usage.CompletionTokens,
-	})
 	if rewriteErr != nil {
 		targetLease.Release()
 		r.refuseMigrationUntil(deadline, estimateWarning, nil, []migrate.CorrectnessFailure{migrate.FailureUnsupportedContinuationShape})
@@ -581,6 +599,24 @@ func (r *streamRuntime) prepareMigration(
 		rescuedTokens:    usage.CompletionTokens,
 		attempt:          migrationsUsed + 2,
 	}, true
+}
+
+func completedGenerationReason(
+	finishReason string,
+	usage tokenUsage,
+	correctness migrate.CorrectnessResult,
+	rewriteErr error,
+) (string, bool) {
+	if !correctness.Eligible() || (rewriteErr != nil && !errors.Is(rewriteErr, migrate.ErrTokenBudgetExhausted)) {
+		return "", false
+	}
+	if finishReason != "" {
+		return finishReason, true
+	}
+	if !usage.Estimated && errors.Is(rewriteErr, migrate.ErrTokenBudgetExhausted) {
+		return "length", true
+	}
+	return "", false
 }
 
 func (r *streamRuntime) acquireMigrationTarget(
@@ -806,6 +842,8 @@ func warningMessage(code string) string {
 		return "accumulated structured output is not a valid JSON prefix"
 	case "unsupported_continuation_shape":
 		return "the request cannot be represented as one continuation"
+	case "token_budget_exhausted":
+		return "the estimated completion-token count leaves no safe continuation budget"
 	case "template_degraded":
 		return "the target chat template has degraded continuation conformance"
 	case "template_unsafe_permissive":
@@ -1053,7 +1091,23 @@ func (r *streamRuntime) refuseExternalTriggerIfIneligible(
 	migrationsUsed := r.migrationsUsed
 	createdAt := r.createdAt
 	estimateWarning := usage.Estimated && !r.estimateWarned
+	finishReason := r.finishReason
 	r.mu.Unlock()
+
+	correctness := migrate.EvaluateCorrectness(migrate.CorrectnessSnapshot{
+		ToolCallInProgress: insideToolCall,
+		StructuredResponse: r.structured,
+		AccumulatedText:    []byte(accumulated),
+		MultipleChoices:    r.multipleChoice,
+	})
+	_, rewriteErr := migrate.RewriteContinuation(r.requestKind, r.requestBody, migrate.ContinuationOptions{
+		AccumulatedText: accumulated, TokensAlreadyEmitted: usage.CompletionTokens,
+	})
+	if _, completed := completedGenerationReason(finishReason, usage, correctness, rewriteErr); completed {
+		// Let the producer cancel its attempt, flush any accepted continuation
+		// frames, and confirm completion without requiring migration eligibility.
+		return false
+	}
 
 	targetLease, acquireErr := r.service.acquireBackend(r.id.String(), r.model, failed.ID)
 	targetAvailable := acquireErr == nil
@@ -1086,12 +1140,6 @@ func (r *streamRuntime) refuseExternalTriggerIfIneligible(
 	if err != nil {
 		return false
 	}
-	correctness := migrate.EvaluateCorrectness(migrate.CorrectnessSnapshot{
-		ToolCallInProgress: insideToolCall,
-		StructuredResponse: r.structured,
-		AccumulatedText:    []byte(accumulated),
-		MultipleChoices:    r.multipleChoice,
-	})
 	if deferUnavailable && errors.Is(acquireErr, backend.ErrNoEligibleBackend) &&
 		correctness.Eligible() && len(eligibility.Failures) == 1 &&
 		eligibility.Failures[0] == migrate.PredicateBackendAvailable {

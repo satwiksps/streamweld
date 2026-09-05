@@ -587,7 +587,14 @@ func (r *streamRuntime) scheduleRetentionExpiry() {
 }
 
 func (r *streamRuntime) finishDone() error {
-	return r.closeTerminal(journal.KindDone, errGenerationComplete, nil, func() ([]byte, *stopResponse, error) {
+	return r.finishDoneUntil(time.Time{}, "")
+}
+
+func (r *streamRuntime) finishDoneUntil(deadline time.Time, fallbackFinishReason string) error {
+	return r.closeTerminalUntil(journal.KindDone, errGenerationComplete, nil, deadline, func() ([]byte, *stopResponse, error) {
+		if r.finishReason == "" {
+			r.finishReason = fallbackFinishReason
+		}
 		_, usage := r.progress.Snapshot()
 		payload, err := json.Marshal(struct {
 			FinishReason *string    `json:"finish_reason"`

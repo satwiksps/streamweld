@@ -35,8 +35,50 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @streamweld/client run build
+      - name: Browser import guard
+        if: matrix.node == 24
+        run: pnpm --filter @streamweld/client run test:browser
       - uses: actions/setup-node@v7.0.0
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
       - run: node --expose-gc --test packages/client/test/runtime-http.mjs
+
+  native:
+    name: ${{ matrix.runtime }} ${{ matrix.version }} HTTP streaming
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: Deno
+            version: "2.9.6"
+          - runtime: Bun
+            version: "1.4.2"
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: pnpm/action-setup@v6.0.10
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @streamweld/client run build
+      - uses: denoland/setup-deno@v2.0.5
+        if: matrix.runtime == 'Deno'
+        with:
+          deno-version: ${{ matrix.version }}
+      - uses: oven-sh/setup-bun@v2.2.0
+        if: matrix.runtime == 'Bun'
+        with:
+          bun-version: ${{ matrix.version }}
+      - name: Native Deno HTTP tests
+        if: matrix.runtime == 'Deno'
+        run: deno test --allow-net=127.0.0.1 packages/client/test/runtime-deno.test.mjs
+      - name: Native Bun HTTP tests
+        if: matrix.runtime == 'Bun'
+        run: bun test packages/client/test/runtime-bun.test.mjs

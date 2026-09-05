@@ -323,6 +323,7 @@ chunk.
 - `structured_prefix_invalid`;
 - `tool_call_boundary`;
 - `unsupported_continuation_shape`;
+- `token_budget_exhausted`;
 - `token_count_estimated`.
 
 Warnings do not close the journal.
@@ -802,6 +803,17 @@ request past a configured token ceiling.
 If an earlier attempt contributes estimated usage, the cumulative usage remains
 `estimated: true` even when later attempts report exact attempt-local counts.
 
+Before selecting a continuation target, the proxy checks whether any supplied
+`max_tokens` or `max_completion_tokens` budget is exhausted. With exact usage,
+it closes with `done` and `finish_reason: "length"` without another generation
+request. With estimated usage, exhaustion produces warning
+`token_budget_exhausted` and terminal error `migration_refused`; an estimate
+alone cannot establish successful completion. An already accepted upstream
+`finish_reason` also allows completion if the transport ends before `[DONE]`,
+and that reason is preserved. These completion paths require the request-shape
+correctness gates in section 11.4 to pass, including the tool-call boundary and
+single-choice requirements. They do not wait for a replacement backend.
+
 `rescued_tokens` is the completion-token count already accepted before a
 migration. The telemetry series uses the same value and exposes estimated
 accounting in structured logs so estimates are not presented as measured
@@ -846,9 +858,10 @@ After eligibility succeeds, Streamweld:
 5. sets `continue_final_message: true` and
    `add_generation_prompt: false`;
 6. preserves sampling parameters and an explicitly supplied `seed`;
-7. sets the applicable `max_tokens` or `max_completion_tokens` to
-   `max(1, original_limit - tokens_already_emitted)`; if no original limit was
-   supplied, it remains absent;
+7. sets each supplied `max_tokens` or `max_completion_tokens` to
+   `original_limit - tokens_already_emitted`, requiring a positive remainder;
+   exhausted budgets are handled as described in section 11.3, and absent or
+   null limits remain unchanged;
 8. forces streaming and dispatches to the selected target;
 9. commits a `migration` entry before accepting any continuation chunk.
 

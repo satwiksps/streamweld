@@ -96,3 +96,7 @@ const chat = useChat({
 The adapter accepts text message parts and rejects unsupported tool, reasoning,
 and file parts before opening a request. Its abort signal detaches locally; use
 the adapter's explicit `stop(chatId)` operation for cancellation.
+
+With `StreamweldChatPersistence` configured, `stop(chatId)` also works after a
+page reload. It stops the saved generation without replaying its response and
+keeps the checkpoint if the request fails, so you can retry.

@@ -1,5 +1,23 @@
 # Operations
 
+## Identifying an installed binary
+
+Include the installed binary's build identity when reporting a problem:
+
+```sh
+streamweld-proxy --version
+streamweld-operator --version
+streamweldctl --version
+```
+
+Each command prints its executable name, version, commit, and commit date to
+standard output and exits without starting a service. These commands require
+no backend, Kubernetes configuration, or credentials. Unstamped source builds
+report `dev` with `unknown` commit and commit date.
+
+`streamweld-proxy --help` also works with invalid environment settings. Its
+standalone help displays built-in defaults, without reading configured values.
+
 ## Draining inference backends
 
 In an operator deployment, drain by Kubernetes Pod identity through the

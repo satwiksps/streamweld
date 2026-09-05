@@ -22,7 +22,7 @@ journal, and an exact resume cursor that can outlive a reader connection or
 backend attempt.
 
 > [!IMPORTANT]
-> The current release is `v1.0.0`. The HTTP/SSE protocol and public TypeScript
+> The current release is `v1.0.1`. The HTTP/SSE protocol and public TypeScript
 > APIs follow semantic versioning. Kubernetes `v1alpha1` resources remain
 > experimental.
 
@@ -34,7 +34,7 @@ Install the proxy and operator into Kubernetes with Helm:
 helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
   --namespace streamweld-system \
   --create-namespace \
-  --version 1.0.0 \
+  --version 1.0.1 \
   --wait --timeout 3m
 ```
 
@@ -47,7 +47,7 @@ npm install @streamweld/ai-sdk ai@^5
 
 Prebuilt `streamweld-proxy`, `streamweld-operator`, and `streamweldctl` archives
 for Linux, macOS, and Windows are available from
-[GitHub Releases](https://github.com/satwiksps/streamweld/releases/tag/v1.0.0).
+[GitHub Releases](https://github.com/satwiksps/streamweld/releases/tag/v1.0.1).
 
 ## Why Streamweld
 

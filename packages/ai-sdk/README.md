@@ -54,6 +54,13 @@ A stopped UI stream also emits a transient `data-streamweld` chunk before its
 normal text-end/finish sequence, so `onData` can distinguish it from model
 completion.
 
+With a `StreamweldChatPersistence` implementation, `stop(chatId)` also works
+immediately after a reload, before reconnecting. It uses the saved stream ID
+and current configured headers and credentials to send only the stop request.
+A successful saved stop removes that generation's checkpoint; a failed request
+keeps it available for retry. A newer generation started by the same transport
+is preserved while the stop request is pending.
+
 For reload-safe resume, provide a `StreamweldChatPersistence` implementation.
 It stores the mapping from AI SDK `chatId` to Streamweld stream identity and
 cursor; the two IDs are not interchangeable. AI SDK v5 does not give a
@@ -61,6 +68,10 @@ reconnecting transport its previously materialized streaming-message state, so
 the adapter deliberately requests a full replay from sequence zero and rebuilds
 that message. Once attached, `@streamweld/client` resumes later network failures
 from its exact cursor without duplicating chunks.
+
+Use one persistence writer per chat ID. If multiple tabs or processes share
+the store, coordinate their writes and removals: this synchronous interface
+does not provide an atomic compare-and-remove operation.
 
 Terminal Streamweld errors become AI SDK `error` chunks after any open text part
 is closed. This is the v5-native error path: `useChat` retains partial text,

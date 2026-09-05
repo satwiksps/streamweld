@@ -33,7 +33,7 @@ body:
     attributes:
       label: Version
       description: Provide a release, image digest, chart or npm version, or commit SHA.
-      placeholder: "v1.0.0, ghcr.io/...@sha256:..., or commit abc1234"
+      placeholder: "v1.0.1, ghcr.io/...@sha256:..., or commit abc1234"
     validations:
       required: true
 
