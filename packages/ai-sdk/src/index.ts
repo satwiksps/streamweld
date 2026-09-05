@@ -21,6 +21,8 @@ export interface StreamweldChatCheckpoint {
 /**
  * Persists the active Streamweld generation for an AI SDK chat. The chat ID and
  * Streamweld stream ID are deliberately separate identities.
+ * Use one writer per chat ID, or coordinate access across tabs/processes;
+ * checkpoint reads and removals are separate synchronous operations.
  */
 export interface StreamweldChatPersistence {
   get(chatId: string): StreamweldChatCheckpoint | null;
@@ -274,8 +276,8 @@ export class StreamweldChatTransport<
     }));
     const outcome = await stream.stop();
 
-    // A new local attachment owns its cleanup. Shared persistence may also
-    // have changed in another tab while the request was in flight.
+    // A new local attachment owns its cleanup. Preserve a saved identity that
+    // changed while the request was in flight.
     if (!this.#active.has(chatId)) {
       if (this.#memory.get(chatId)?.streamId === checkpoint.streamId) {
         this.#memory.delete(chatId);
