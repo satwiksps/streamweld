@@ -156,27 +156,57 @@ func waitRemoteDurability(
 	proxyURL string,
 	retryDelay time.Duration,
 ) error {
+	// Redis service routing and existing connection pools can still be
+	// recovering after one successful stream. Keep exercising full lifecycles
+	// through fresh HTTP connections until recovery remains stable.
+	return waitRemoteDurabilityStable(ctx, client, proxyURL, retryDelay, 5*time.Second)
+}
+
+func waitRemoteDurabilityStable(
+	ctx context.Context,
+	client *http.Client,
+	proxyURL string,
+	retryDelay, stableFor time.Duration,
+) error {
+	canaryClient := *client
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	canaryClient.Transport = canaryConnectionTransport{transport: transport}
+	var stableSince time.Time
 	var lastErr error
 	for attempt := 1; ; attempt++ {
 		stream, err := attachRemoteStream(
-			ctx, client, proxyURL, ScenarioClientDrop, -attempt, 8,
+			ctx, &canaryClient, proxyURL, ScenarioClientDrop, -attempt, 8,
 		)
 		if err == nil {
 			err = finishRemoteStream(
-				ctx, client, proxyURL, ScenarioClientDrop, retryDelay, stream,
+				ctx, &canaryClient, proxyURL, ScenarioClientDrop, retryDelay, stream,
 			)
 		}
 		if err == nil {
 			canonical := deterministicOutput(8)
-			if stream.terminal == "done" && !stream.degraded && stream.output.String() == canonical {
+			if stream.terminal != "done" || stream.degraded || stream.output.String() != canonical {
+				err = fmt.Errorf(
+					"durability canary ended as %q (degraded=%t, output_correct=%t)",
+					stream.terminal, stream.degraded, stream.output.String() == canonical,
+				)
+			}
+		}
+		if err != nil {
+			stableSince = time.Time{}
+			if lastErr == nil || (!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)) {
+				lastErr = err
+			}
+		} else {
+			if stableSince.IsZero() {
+				stableSince = time.Now()
+			}
+			if time.Since(stableSince) >= stableFor {
 				return nil
 			}
-			err = fmt.Errorf(
-				"durability canary ended as %q (degraded=%t, output_correct=%t)",
-				stream.terminal, stream.degraded, stream.output.String() == canonical,
-			)
 		}
-		lastErr = err
 		if waitErr := waitRemoteReconnect(ctx, retryDelay); waitErr != nil {
 			return fmt.Errorf(
 				"wait for end-to-end durable proxy recovery: %w",
@@ -184,6 +214,16 @@ func waitRemoteDurability(
 			)
 		}
 	}
+}
+
+type canaryConnectionTransport struct {
+	transport http.RoundTripper
+}
+
+func (transport canaryConnectionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	canaryRequest := request.Clone(request.Context())
+	canaryRequest.Close = true
+	return transport.transport.RoundTrip(canaryRequest)
 }
 
 func measureRemoteTTFT(
@@ -429,13 +469,13 @@ func remoteStreamProductionDone(
 	if err := json.Unmarshal(payload, &state); err != nil {
 		return false, fmt.Errorf("decode state: %w", err)
 	}
+	if !state.Resumable {
+		return false, fmt.Errorf("stream in state %q is not resumable", state.Status)
+	}
 	switch state.Status {
 	case "open":
 		return false, nil
 	case "done":
-		if !state.Resumable {
-			return false, errors.New("completed stream is not resumable")
-		}
 		return true, nil
 	default:
 		return false, fmt.Errorf("production ended in unexpected state %q", state.Status)

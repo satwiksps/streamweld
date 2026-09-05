@@ -8,6 +8,12 @@ The harness has three deliberately separate profiles:
 
 The nine deterministic scenarios are `pod-kill`, `rolling-update`, `spot-reclaim`, `backend-oom`, `client-drop`, `explicit-stop`, `redis-down`, `slow-consumer`, and `unsafe-template`. The first four migrate every injected stream. Explicit stop must terminate as `stopped`; an unsafe continuation must terminate as `migration_refused`; Redis loss must complete as `done_degraded`. Two proxy replicas use the chart's mTLS owner relay so live operations remain owner-directed behind the NodePort. The slow-consumer case uses the system worker's local NodePort directly, combines a constrained client receive window with a pod-scoped 4 KiB proxy TCP send bound, waits for the batched deterministic producer to finish, and must observe `reader_lag_exceeded` before resuming; completing without that eviction fails the case. A disposable NetworkPolicy admits only the runner's detected kind bridge gateway to that NodePort. The policy, short-lived relay certificate, and TCP sysctl are confined to the kind fixture; they do not alter production chart defaults.
 
+After restoring Redis, the kind profile requires five seconds of successful
+create/resume/completion canaries on fresh HTTP connections. Any failed or
+degraded canary restarts that interval. One successful request is insufficient
+while the restored service and connection pools are still recovering. The
+slow-consumer check fails immediately if a stream becomes non-resumable.
+
 Run the local correctness suite and regenerate committed evidence:
 
 ```sh

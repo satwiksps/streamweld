@@ -2,11 +2,15 @@ package chaos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/satwiksps/streamweld/internal/proxy/sse"
@@ -20,6 +24,9 @@ func TestWaitRemoteDurabilityProvesCreateResumeAndCompletion(t *testing.T) {
 	var idempotencyKeys []string
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
+		if !request.Close {
+			t.Error("durability canary must close its creation and resume connections")
+		}
 		if request.Method == http.MethodPost {
 			idempotencyKeys = append(idempotencyKeys, request.Header.Get("X-Streamweld-Idempotency-Key"))
 		}
@@ -61,7 +68,7 @@ func TestWaitRemoteDurabilityProvesCreateResumeAndCompletion(t *testing.T) {
 	})}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := waitRemoteDurability(ctx, client, "http://proxy.example.test", time.Millisecond); err != nil {
+	if err := waitRemoteDurabilityStable(ctx, client, "http://proxy.example.test", time.Millisecond, 0); err != nil {
 		t.Fatalf("waitRemoteDurability() error = %v", err)
 	}
 	if calls != 3 {
@@ -111,7 +118,7 @@ func TestWaitRemoteDurabilityRetriesLifecycleDegradation(t *testing.T) {
 	})}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := waitRemoteDurability(ctx, client, "http://proxy.example.test", time.Millisecond); err != nil {
+	if err := waitRemoteDurabilityStable(ctx, client, "http://proxy.example.test", time.Millisecond, 0); err != nil {
 		t.Fatalf("waitRemoteDurability() error = %v", err)
 	}
 	if calls != 4 {
@@ -139,6 +146,156 @@ func TestWaitRemoteDurabilityPreservesLastFailureAtDeadline(t *testing.T) {
 	if calls < 2 {
 		t.Fatalf("durability canary requests = %d, want retries", calls)
 	}
+}
+
+func TestWaitRemoteDurabilityRestartsStableWindowAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		const stableFor = 50 * time.Millisecond
+		attempts := 0
+		keys := make(map[string]bool)
+		var recoveredAt time.Time
+		client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodPost {
+				attempts++
+				key := request.Header.Get("X-Streamweld-Idempotency-Key")
+				if key == "" || keys[key] {
+					t.Fatalf("canary %d reused or omitted idempotency key %q", attempts, key)
+				}
+				keys[key] = true
+				if attempts == 2 {
+					// The first success must not count toward recovery after this failure.
+					time.Sleep(stableFor)
+					return chaosHTTPResponse(request, http.StatusOK, http.Header{
+						"X-Streamweld-Durability": []string{"degraded"},
+					}, "data: [DONE]\n\n"), nil
+				}
+			} else {
+				if request.Header.Get("Last-Event-ID") != "1" ||
+					request.URL.Path != fmt.Sprintf("/v1/streams/canary-%d/events", attempts) {
+					t.Fatalf("canary resume = %s Last-Event-ID %q", request.URL, request.Header.Get("Last-Event-ID"))
+				}
+				if attempts == 3 {
+					recoveredAt = time.Now()
+				}
+			}
+			return completeCanaryResponse(request, attempts), nil
+		})}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := waitRemoteDurabilityStable(ctx, client, "http://proxy.example.test", 10*time.Millisecond, stableFor); err != nil {
+			t.Fatalf("waitRemoteDurabilityStable() error = %v", err)
+		}
+		if attempts < 4 || recoveredAt.IsZero() || time.Since(recoveredAt) < stableFor {
+			t.Fatalf("recovery accepted after %d attempts and %v stable, want a full %v after the failure", attempts, time.Since(recoveredAt), stableFor)
+		}
+	})
+}
+
+func TestWaitRemoteDurabilityDeadlineKeepsFailureAfterLaterSuccess(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		attempts, resumes := 0, 0
+		client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodPost {
+				attempts++
+				if attempts == 2 {
+					return chaosHTTPResponse(request, http.StatusOK, http.Header{
+						"X-Streamweld-Durability": []string{"degraded"},
+					}, "data: [DONE]\n\n"), nil
+				}
+			} else {
+				resumes++
+			}
+			return completeCanaryResponse(request, attempts), nil
+		})}
+		// Expire during a canary's detach delay, after multiple full successes.
+		ctx, cancel := context.WithTimeout(context.Background(), 95*time.Millisecond)
+		defer cancel()
+		err := waitRemoteDurabilityStable(ctx, client, "http://proxy.example.test", 10*time.Millisecond, time.Second)
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "response is not durable") {
+			t.Fatalf("waitRemoteDurabilityStable() error = %v, want deadline and prior durability failure", err)
+		}
+		if resumes < 2 {
+			t.Fatalf("completed resumes = %d, want successes before and after the failure", resumes)
+		}
+	})
+}
+
+func TestWaitRemoteDurabilityClosesCanaryHTTPConnectionsOnly(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	connections := make(map[string]bool)
+	canaryRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/ordinary" {
+			if request.Close {
+				t.Error("recovery changed ordinary caller requests to close their connections")
+			}
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		mu.Lock()
+		connections[request.RemoteAddr] = true
+		canaryRequests++
+		mu.Unlock()
+		if !request.Close {
+			t.Error("canary request did not close its HTTP connection")
+		}
+		response := completeCanaryResponse(request, 1)
+		defer func() {
+			if err := response.Body.Close(); err != nil {
+				t.Errorf("close canary fixture body: %v", err)
+			}
+		}()
+		for name, values := range response.Header {
+			writer.Header()[name] = values
+		}
+		_, _ = io.Copy(writer, response.Body)
+	}))
+	defer server.Close()
+	client := server.Client()
+	originalTransport := client.Transport
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitRemoteDurabilityStable(ctx, client, server.URL, time.Millisecond, 0); err != nil {
+		t.Fatalf("waitRemoteDurabilityStable() error = %v", err)
+	}
+	mu.Lock()
+	if canaryRequests != 2 || len(connections) != 2 {
+		t.Errorf("canary made %d requests on %d connections, want distinct creation and resume connections", canaryRequests, len(connections))
+	}
+	mu.Unlock()
+	if client.Transport != originalTransport {
+		t.Fatal("recovery replaced the caller's transport")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/ordinary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("ordinary client request after recovery: %v", err)
+	}
+	_ = response.Body.Close()
+}
+
+func completeCanaryResponse(request *http.Request, attempt int) *http.Response {
+	if request.Method == http.MethodPost {
+		return chaosHTTPResponse(request, http.StatusOK, http.Header{
+			"X-Streamweld-Durability": []string{"durable"},
+			"X-Streamweld-Stream-Id":  []string{fmt.Sprintf("canary-%d", attempt)},
+		}, "id: 1\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"token-000 \"}}]}\n\n")
+	}
+	var body strings.Builder
+	for token := 1; token < 8; token++ {
+		_, _ = fmt.Fprintf(&body, "id: %d\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"token-%03d \"}}]}\n\n", token+1, token)
+	}
+	_, _ = fmt.Fprint(&body, "id: 9\nevent: streamweld.stream.done\ndata: {}\n\n")
+	return chaosHTTPResponse(request, http.StatusOK, nil, body.String())
 }
 
 func chaosHTTPResponse(
