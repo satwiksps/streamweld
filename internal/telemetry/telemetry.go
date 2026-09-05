@@ -299,7 +299,7 @@ func (r *Recorder) StreamStarted(labels Labels) {
 		"max_migrations", "max_migration_tokens", "max_stream_duration",
 		"template_verdict", "allow_structured_resume", "model_version",
 		"backend_available", "tool_call_boundary", "structured_prefix_invalid",
-		"unsupported_continuation_shape", "invalid_policy", "migration_ineligible",
+		"unsupported_continuation_shape", "token_budget_exhausted", "invalid_policy", "migration_ineligible",
 	} {
 		r.migrationsRefused.WithLabelValues(route, model, predicate).Add(0)
 	}

@@ -16,6 +16,9 @@ var (
 	// ErrUnsupportedContinuationShape indicates a valid request shape that
 	// cannot be represented by one assistant continuation in protocol v1.
 	ErrUnsupportedContinuationShape = errors.New("migrate: unsupported continuation shape")
+	// ErrTokenBudgetExhausted indicates that another generation request would
+	// exceed an original request's supplied completion-token limit.
+	ErrTokenBudgetExhausted = errors.New("migrate: completion token budget exhausted")
 )
 
 // RequestKind selects the OpenAI request shape to rewrite.
@@ -37,7 +40,8 @@ type ContinuationOptions struct {
 // RewriteContinuation creates a streaming continuation request while
 // retaining all unrecognized top-level fields. Explicit seed and sampling
 // fields are left untouched. Every supplied token-limit field is recomputed
-// independently and floored at one.
+// independently. Exhausted limits return ErrTokenBudgetExhausted instead of
+// authorizing another token.
 func RewriteContinuation(kind RequestKind, original []byte, options ContinuationOptions) ([]byte, error) {
 	if !utf8.Valid(original) || !utf8.ValidString(options.AccumulatedText) {
 		return nil, fmt.Errorf("%w: request and accumulated text must be valid UTF-8", ErrInvalidRequest)
@@ -197,13 +201,10 @@ func recomputeTokenLimit(fields map[string]json.RawMessage, name string, emitted
 	if err := json.Unmarshal(raw, &original); err != nil {
 		return fmt.Errorf("%w: %s must be a non-negative integer: %w", ErrInvalidRequest, name, err)
 	}
-	remaining := uint64(1)
-	if original > emitted {
-		remaining = original - emitted
-		if remaining == 0 {
-			remaining = 1
-		}
+	if original <= emitted {
+		return fmt.Errorf("%w: %s=%d with %d tokens already emitted", ErrTokenBudgetExhausted, name, original, emitted)
 	}
+	remaining := original - emitted
 	fields[name] = json.RawMessage(strconv.FormatUint(remaining, 10))
 	return nil
 }

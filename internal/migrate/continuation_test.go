@@ -17,7 +17,7 @@ func TestRewriteChatContinuationPreservesFieldsAndAppendsAssistant(t *testing.T)
 		"stream":false,
 		"temperature":0.25,
 		"seed":9007199254740993,
-		"max_tokens":6,
+		"max_tokens":8,
 		"max_completion_tokens":10,
 		"vendor":{"nested":[1,{"preserve":true}]}
 	}`)
@@ -95,12 +95,14 @@ func TestRewriteContinuationTokenLimitBoundaries(t *testing.T) {
 		emitted uint64
 		want    string
 		field   string
+		wantErr bool
 	}{
 		{name: "one remaining", limit: "8", emitted: 7, want: "1", field: "max_tokens"},
-		{name: "equal floors", limit: "8", emitted: 8, want: "1", field: "max_tokens"},
-		{name: "emitted exceeds floors", limit: "8", emitted: 9, want: "1", field: "max_tokens"},
-		{name: "zero original floors", limit: "0", emitted: 0, want: "1", field: "max_tokens"},
+		{name: "equal exhausted", limit: "8", emitted: 8, wantErr: true, field: "max_tokens"},
+		{name: "emitted exceeds limit", limit: "8", emitted: 9, wantErr: true, field: "max_tokens"},
+		{name: "zero original exhausted", limit: "0", emitted: 0, wantErr: true, field: "max_tokens"},
 		{name: "completion limit", limit: "100", emitted: 37, want: "63", field: "max_completion_tokens"},
+		{name: "completion limit exhausted", limit: "100", emitted: 100, wantErr: true, field: "max_completion_tokens"},
 	}
 	for _, test := range tests {
 		test := test
@@ -108,6 +110,12 @@ func TestRewriteContinuationTokenLimitBoundaries(t *testing.T) {
 			t.Parallel()
 			original := []byte(`{"messages":[],"` + test.field + `":` + test.limit + `}`)
 			rewritten, err := RewriteContinuation(RequestChatCompletion, original, ContinuationOptions{TokensAlreadyEmitted: test.emitted})
+			if test.wantErr {
+				if !errors.Is(err, ErrTokenBudgetExhausted) || rewritten != nil {
+					t.Fatalf("RewriteContinuation() = %s, %v; want no request and ErrTokenBudgetExhausted", rewritten, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("RewriteContinuation() error = %v", err)
 			}
@@ -230,6 +238,7 @@ func TestIsStructuredRequest(t *testing.T) {
 func FuzzRewriteChatContinuation(f *testing.F) {
 	f.Add("prefix", uint64(0))
 	f.Add("multibyte 雪", uint64(7))
+	f.Add("exact limit", uint64(25))
 	f.Add("line\nnext", uint64(100))
 	f.Fuzz(func(t *testing.T, accumulated string, emitted uint64) {
 		if !utf8.ValidString(accumulated) {
@@ -239,6 +248,12 @@ func FuzzRewriteChatContinuation(f *testing.F) {
 		rewritten, err := RewriteContinuation(RequestChatCompletion, original, ContinuationOptions{
 			AccumulatedText: accumulated, TokensAlreadyEmitted: emitted,
 		})
+		if emitted >= 25 {
+			if !errors.Is(err, ErrTokenBudgetExhausted) || rewritten != nil {
+				t.Fatalf("RewriteContinuation() = %s, %v; want no request and ErrTokenBudgetExhausted", rewritten, err)
+			}
+			return
+		}
 		if err != nil {
 			t.Fatalf("RewriteContinuation() error = %v", err)
 		}
