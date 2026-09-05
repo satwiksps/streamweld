@@ -213,6 +213,13 @@ describe("StreamweldChatTransport", () => {
     expect(headers.get("x-streamweld-idempotency-key")).toBe("caller-key");
   });
 
+  it.each([undefined, null])("preserves the resolved model when body.model is %s", async (model) => {
+    createDurableStream.mockReturnValue(fakeStream(events({ type: "done", usage })));
+    const transport = new StreamweldChatTransport({ model: "default-model" });
+    await readAll(await transport.sendMessages(sendOptions({ body: { model } })));
+    expect(createDurableStream.mock.calls[0]?.[0].body.model).toBe("default-model");
+  });
+
   it("does not synthesize a reusable idempotency key across separate generations", async () => {
     createDurableStream.mockReturnValue(
       fakeStream(events({ type: "done", finishReason: "stop", usage })),
@@ -506,8 +513,11 @@ describe("StreamweldChatTransport", () => {
   });
 
   it("rejects unsupported OpenAI response shapes instead of silently truncating", async () => {
-    createDurableStream.mockReturnValue(
-      fakeStream(
+    let signal: AbortSignal | undefined;
+    const stop = vi.fn();
+    createDurableStream.mockImplementation((options) => {
+      signal = options.signal;
+      return fakeStream(
         events({
           type: "chunk",
           data: {
@@ -516,12 +526,15 @@ describe("StreamweldChatTransport", () => {
             ],
           },
         }),
-      ),
-    );
+        stop,
+      );
+    });
     const transport = new StreamweldChatTransport({ model: "m" });
     const reader = (await transport.sendMessages(sendOptions())).getReader();
     await reader.read();
     await expect(reader.read()).rejects.toBeInstanceOf(UnsupportedStreamPayloadError);
+    expect(signal?.aborted).toBe(true);
+    expect(stop).not.toHaveBeenCalled();
   });
 
   it("clears the current checkpoint after a typed stream expiration", async () => {
