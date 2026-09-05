@@ -50,6 +50,7 @@
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
+    "test:runtime": "node --expose-gc --test test/runtime-http.mjs",
     "typecheck": "tsc --project tsconfig.json"
   }
 }

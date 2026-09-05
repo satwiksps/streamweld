@@ -25,8 +25,14 @@ env:
   RELEASE_GO_VERSION: 1.26.6
 
 jobs:
+  sdk-runtime:
+    uses: ./.github/workflows/sdk-runtime.yml
+    with:
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
   quality:
     name: Release quality gate
+    needs: sdk-runtime
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
