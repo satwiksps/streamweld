@@ -26,15 +26,25 @@ func main() {
 }
 
 func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Writer) int {
-	config, err := proxy.ConfigFromEnv(lookup)
-	if err != nil {
-		startupLogger(stderr).Error("invalid environment configuration", "error", err)
-		return 2
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-version") {
+		return printVersion(stdout, stderr)
 	}
 
-	logLevel := envOrDefault(lookup, "STREAMWELD_LOG_LEVEL", "info")
+	config := proxy.DefaultConfig()
+	logLevel := "info"
+	helpRequested := len(args) > 0 && (args[0] == "--help" || args[0] == "-help" || args[0] == "-h" || args[0] == "--h")
+	if !helpRequested {
+		var err error
+		config, err = proxy.ConfigFromEnv(lookup)
+		if err != nil {
+			startupLogger(stderr).Error("invalid environment configuration", "error", err)
+			return 2
+		}
+		logLevel = envOrDefault(lookup, "STREAMWELD_LOG_LEVEL", "info")
+	}
 	flags := flag.NewFlagSet("streamweld-proxy", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	showVersion := flags.Bool("version", false, "print version, commit, and commit date, then exit")
 	flags.Func("backend", "absolute URL of the OpenAI-compatible backend (or STREAMWELD_BACKEND; omitted from help defaults)", func(value string) error {
 		config.BackendURL = value
 		return nil
@@ -107,6 +117,9 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 		flags.Usage()
 		return 2
 	}
+	if *showVersion {
+		return printVersion(stdout, stderr)
+	}
 
 	level, err := parseLogLevel(logLevel)
 	if err != nil {
@@ -157,7 +170,14 @@ func run(args []string, lookup func(string) (string, bool), stdout, stderr io.Wr
 		logger.Error("proxy stopped with an error", "error", err)
 		return 1
 	}
-	_ = stdout // Reserved for command output; operational logs remain on stderr.
+	return 0
+}
+
+func printVersion(stdout, stderr io.Writer) int {
+	if err := version.Current().Write(stdout, "streamweld-proxy"); err != nil {
+		startupLogger(stderr).Error("write version", "error", err)
+		return 1
+	}
 	return 0
 }
 

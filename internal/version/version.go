@@ -1,12 +1,17 @@
 // Package version exposes build metadata shared by Streamweld binaries.
 package version
 
+import (
+	"fmt"
+	"io"
+)
+
 var (
 	// Version is replaced by release builds. Development builds use "dev".
 	Version = "dev"
 	// Commit is replaced by release builds when the Git revision is known.
 	Commit = "unknown"
-	// Date is replaced by release builds with an RFC 3339 build time.
+	// Date is replaced by release builds with the RFC 3339 commit date.
 	Date = "unknown"
 )
 
@@ -20,4 +25,11 @@ type Info struct {
 // Current returns the build identity embedded in the binary.
 func Current() Info {
 	return Info{Version: Version, Commit: Commit, Date: Date}
+}
+
+// Write prints a binary's build identity as one line for support reports.
+func (info Info) Write(writer io.Writer, executable string) error {
+	_, err := fmt.Fprintf(writer, "%s %s (commit %s, date %s)\n",
+		executable, info.Version, info.Commit, info.Date)
+	return err
 }

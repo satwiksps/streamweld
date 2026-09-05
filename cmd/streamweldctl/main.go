@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/satwiksps/streamweld/internal/conformance"
+	"github.com/satwiksps/streamweld/internal/version"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -35,6 +36,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "--version", "-version":
+		if len(args) != 1 {
+			_, _ = fmt.Fprintln(stderr, "streamweldctl: --version does not accept additional arguments")
+			return 2
+		}
+		if err := version.Current().Write(stdout, "streamweldctl"); err != nil {
+			_, _ = fmt.Fprintf(stderr, "streamweldctl: write version: %v\n", err)
+			return 1
+		}
+		return 0
 	case "bench":
 		return runBench(args[1:], stdout, stderr)
 	case "doctor":
@@ -299,6 +310,7 @@ func writeDoctorReport(writer io.Writer, report conformance.Report, asJSON bool)
 
 func printUsage(writer io.Writer) {
 	_, _ = fmt.Fprintln(writer, "Usage: streamweldctl <command> [options]")
+	_, _ = fmt.Fprintln(writer, "       streamweldctl --version")
 	_, _ = fmt.Fprintln(writer)
 	_, _ = fmt.Fprintln(writer, "Commands:")
 	_, _ = fmt.Fprintln(writer, "  bench    run or verify the reproducible chaos benchmark matrix")
