@@ -40,6 +40,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.0.0
       - run: go mod download
       - name: Test with race detector
         run: make test-go GO_TEST_FLAGS=-race

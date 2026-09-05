@@ -25,7 +25,9 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: {{ ternary "Recreate" "RollingUpdate" .Values.redis.persistence.enabled }}
+    # This Redis is a standalone journal, not a replicated Redis cluster.
+    # Never route clients to two independent instances during an upgrade.
+    type: Recreate
   selector:
     matchLabels:
       {{- include "streamweld.redisSelectorLabels" . | nindent 6 }}
