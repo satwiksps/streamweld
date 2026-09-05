@@ -51,6 +51,9 @@
     "build": "tsup",
     "test": "vitest run",
     "test:runtime": "node --expose-gc --test test/runtime-http.mjs",
+    "test:deno": "deno test --allow-net=127.0.0.1 test/runtime-deno.test.mjs",
+    "test:bun": "bun test test/runtime-bun.test.mjs",
+    "test:browser": "node --test test/browser-import.mjs",
     "typecheck": "tsc --project tsconfig.json"
   }
 }

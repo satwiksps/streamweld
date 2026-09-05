@@ -56,15 +56,29 @@ The full local gate is `make ci`. Some checks require Docker, Redis, kind, or
 platform tooling; run every check relevant to the files you changed and state
 clearly in the pull request when an environment prevented a check.
 
-For client changes, build the package and run its real HTTP runtime checks:
+For client changes, build the package with the development Node toolchain and
+run its runtime checks:
 
 ```sh
 pnpm --filter @streamweld/client run build
 pnpm --filter @streamweld/client run test:runtime
+pnpm --filter @streamweld/client run test:browser
+pnpm --filter @streamweld/client run test:deno
+pnpm --filter @streamweld/client run test:bun
 ```
 
-These checks take about 30 seconds and exercise reader cancellation after
-garbage collection. CI runs them on Node 20, 22, and 24 before releases.
+Install Deno 2.9.6 and Bun 1.4.2 on `PATH` for the last two commands. All four
+suites import the built ESM package. The Node suite takes about 30 seconds and
+checks reader cancellation after garbage collection and stop deadlines; CI
+runs it on Node 20, 22, and 24. The Deno and Bun suites use each runtime's native
+HTTP server and test UTF-8 SSE, exact reconnect cursors, duplicate suppression,
+local detach, explicit stop, and expiration. Deno receives only loopback
+network permission. No upstream provider or proxy is required.
+
+The browser guard bundles for the browser and imports the result in a context
+with only Web API globals. It rejects Node dependencies, but does not replace
+testing streaming in a real browser or edge provider. The reusable SDK runtime
+workflow gates releases on all of these checks.
 
 ## Making a change
 
@@ -142,6 +156,7 @@ gate before requesting review.
 | Go proxy, journal, migration, operator, or CLI | `go test ./...`, `make vet`, `make lint-go`, `make build-go` |
 | Concurrency or lifecycle logic | `go test -race ./...` on a CGO-capable host |
 | TypeScript clients or website | `make typecheck`, `make test-ts`, `make build-ts` |
+| `@streamweld/client` runtime behavior or imports | Build the client, then run `test:runtime`, `test:browser`, `test:deno`, and `test:bun` as above |
 | Helm chart or CRDs | `make helm-lint`; run `make e2e` for runtime behavior |
 | Chaos harness or benchmark rendering | `make chaos`, `make bench-check`; use `make chaos-kind` for physical injections |
 | Terraform | `make terraform-validate terraform-lint` |

@@ -1,8 +1,7 @@
 # `@streamweld/client`
 
 Dependency-free durable SSE streaming for Streamweld. The package uses only
-web-platform APIs and ships ESM, CommonJS, and TypeScript declarations for
-browsers, Node 20+, Deno, Bun, and edge runtimes.
+web-platform APIs and ships ESM, CommonJS, and TypeScript declarations.
 
 ```sh
 npm install @streamweld/client
@@ -90,3 +89,24 @@ Authorization and other caller headers are preserved for resume and stop
 requests. Streamweld-specific initial-only headers are stripped from GET/stop
 requests, while `X-Streamweld-Verbose: 1` is always enabled so typed migration
 and warning events are observable.
+
+## Runtime verification
+
+The published package supports Node 20+ and Web API runtimes. CI checks the
+built ESM entry point with the following runtime suites before publishing:
+
+| Runtime | Checks |
+|---|---|
+| Node 20, 22, 24 | Real HTTP cancellation after garbage collection and the complete stop response timeout |
+| Deno 2.9.6, Bun 1.4.2 | Native HTTP servers: UTF-8 SSE, exact reconnect cursors, duplicate suppression, local detach, explicit stop, and expiration |
+| Browser/edge targets | Browser-mode bundling rejects Node dependencies; the bundle imports in a context exposing only Web APIs |
+
+The browser check is an import guard; it does not run streaming in a browser
+or an edge provider. Those environments also need streaming `fetch`,
+`ReadableStream`, `TextDecoder`, and `AbortController`. Cross-origin requests
+need a server CORS policy that permits the request headers and exposes the
+Streamweld response headers.
+
+To reproduce these checks from a checkout, install the development toolchain
+and the exact Deno/Bun versions above, then follow the
+[runtime test commands](https://github.com/satwiksps/streamweld/blob/main/CONTRIBUTING.md#development-setup).
