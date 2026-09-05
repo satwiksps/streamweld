@@ -62,7 +62,7 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: actions/setup-python@v6.0.0
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
           cache: pip
