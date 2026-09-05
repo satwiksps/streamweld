@@ -158,8 +158,10 @@ class DurableStreamImplementation implements DurableStream {
     const timeout = setTimeout(() => controller.abort(), 30_000);
     try {
       const response = await this.#options.fetch(url, this.#requestInit("POST", headers, controller.signal));
-      if (!response.ok) throw await decodeHTTPError(response, this.#options.maxErrorBytes, id);
-      const raw = await readBoundedText(response, this.#options.maxErrorBytes);
+      if (!response.ok) {
+        throw await decodeHTTPError(response, this.#options.maxErrorBytes, id, controller.signal);
+      }
+      const raw = await readBoundedText(response, this.#options.maxErrorBytes, controller.signal);
       return decodeStopResult(raw, id);
     } catch (error) {
       if (controller.signal.aborted) {
@@ -216,7 +218,9 @@ class DurableStreamImplementation implements DurableStream {
         throw error;
       }
       if (!response.ok) {
-        const failure = await decodeHTTPError(response, this.#options.maxErrorBytes, this.#id);
+        const failure = await decodeHTTPError(
+          response, this.#options.maxErrorBytes, this.#id, this.#controller.signal,
+        );
         if (isRetryableStatus(response.status) && !(failure instanceof StreamExpiredError)) {
           failures = await this.#retry(failures, failure);
           continue;
@@ -322,15 +326,19 @@ class DurableStreamImplementation implements DurableStream {
     if (response.body === null) throw new RetryableReaderError("SSE response has no body");
     const reader = response.body.getReader();
     const parser = new IncrementalSSEParser(this.#options.maxEventBytes);
+    const removeAbortListener = cancelReaderOnAbort(reader, this.#controller.signal);
     let shouldCancel = true;
     try {
       while (true) {
+        this.#throwIfAborted();
         const read = await reader.read();
+        this.#throwIfAborted();
         if (read.done) {
           shouldCancel = false;
           break;
         }
         for (const frame of parser.push(read.value)) {
+          this.#throwIfAborted();
           if (this.#handleFrame(frame)) {
             await cancelReader(reader);
             shouldCancel = false;
@@ -340,6 +348,7 @@ class DurableStreamImplementation implements DurableStream {
         }
       }
       for (const frame of parser.finish()) {
+        this.#throwIfAborted();
         if (this.#handleFrame(frame)) {
           await cancelReader(reader);
           shouldCancel = false;
@@ -349,6 +358,7 @@ class DurableStreamImplementation implements DurableStream {
       }
       return { terminal: false };
     } finally {
+      removeAbortListener();
       if (shouldCancel) {
         await cancelReader(reader);
       }
@@ -825,8 +835,9 @@ async function decodeHTTPError(
   response: Response,
   maxBytes: number,
   fallbackStreamID: string | null,
+  signal: AbortSignal,
 ): Promise<StreamHTTPError> {
-  const raw = await readBoundedText(response, maxBytes);
+  const raw = await readBoundedText(response, maxBytes, signal);
   let code: string | null = null;
   let message = `Streamweld returned HTTP ${String(response.status)}`;
   let streamId = fallbackStreamID;
@@ -851,14 +862,20 @@ async function decodeHTTPError(
   return new StreamHTTPError(message, response.status, code, streamId);
 }
 
-async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
-  if (response.body === null) return "";
+async function readBoundedText(response: Response, maxBytes: number, signal: AbortSignal): Promise<string> {
+  if (response.body === null) {
+    throwIfSignalAborted(signal);
+    return "";
+  }
   const reader = response.body.getReader();
+  const removeAbortListener = cancelReaderOnAbort(reader, signal);
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     while (true) {
+      throwIfSignalAborted(signal);
       const read = await reader.read();
+      throwIfSignalAborted(signal);
       if (read.done) break;
       if (total + read.value.byteLength > maxBytes) {
         const remaining = maxBytes - total;
@@ -870,8 +887,10 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
       total += read.value.byteLength;
     }
   } finally {
+    removeAbortListener();
     reader.releaseLock();
   }
+  throwIfSignalAborted(signal);
   const joined = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
   let offset = 0;
   for (const chunk of chunks) {
@@ -968,6 +987,24 @@ async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Pr
     await reader.cancel();
   } catch {
     // The transport may already be failed; cancellation remains best-effort.
+  }
+}
+
+function cancelReaderOnAbort(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): () => void {
+  // Some Fetch implementations lose abort propagation after response headers.
+  // Cancel the owned reader directly so a pending read still wakes on abort.
+  const onAbort = (): void => { void cancelReader(reader); };
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  return () => signal.removeEventListener("abort", onAbort);
+}
+
+function throwIfSignalAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new LocalAbortError("the local stream attachment was aborted", { cause: signal.reason });
   }
 }
 

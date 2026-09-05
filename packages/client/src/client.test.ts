@@ -354,9 +354,10 @@ describe("createDurableStream", () => {
     expect(calls).toHaveLength(2);
   });
 
-  it.each([202, 503])("times out a stalled stop response body after HTTP %s", async (status) => {
+  it.each([202, 503])("cancels a stalled HTTP %s stop body without Fetch abort propagation", async (status) => {
     vi.useFakeTimers();
     const stopSignals: AbortSignal[] = [];
+    const cancel = vi.fn();
     let stalledBody: ReadableStreamDefaultController<Uint8Array> | undefined;
     try {
       const stream = createDurableStream({
@@ -370,8 +371,8 @@ describe("createDurableStream", () => {
           return new Response(new ReadableStream<Uint8Array>({
             start(controller) {
               stalledBody = controller;
-              stopSignal.addEventListener("abort", () => controller.error(stopSignal.reason), { once: true });
             },
+            cancel,
           }), { status });
         },
       });
@@ -380,6 +381,7 @@ describe("createDurableStream", () => {
       const failure = stopResult.catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(30_000);
       expect(stopSignals[0]?.aborted).toBe(true);
+      expect(cancel).toHaveBeenCalledOnce();
       expect(await failure).toMatchObject({
         name: "StreamTransportError",
         message: "stop request timed out",
@@ -388,6 +390,86 @@ describe("createDurableStream", () => {
       stalledBody?.error(new Error("test cleanup"));
       vi.useRealTimers();
     }
+  });
+
+  it.each([200, 503])("detaches a stalled HTTP %s reader without Fetch abort propagation or retries", async (status) => {
+    const controller = new AbortController();
+    const cancel = vi.fn();
+    const calls: FetchCall[] = [];
+    let stalledBody: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let readStarted!: () => void;
+    const reading = new Promise<void>((resolve) => { readStarted = resolve; });
+    const stream = createDurableStream({
+      url: baseURL,
+      body: requestBody(),
+      signal: controller.signal,
+      resume: { maxAttempts: 2, backoff: { initialMs: 0, maxMs: 0 } },
+      fetch: recordingFetch(calls, async () => new Response(new ReadableStream<Uint8Array>({
+        start(bodyController) {
+          stalledBody = bodyController;
+          if (status === 200) {
+            bodyController.enqueue(new TextEncoder().encode(frame("streamweld.stream.open", "1", open)));
+          }
+        },
+        pull() { readStarted(); },
+        cancel,
+      }, { highWaterMark: 0 }), {
+        status,
+        headers: status === 200 ? streamHeaders(id) : { "Content-Type": "application/json" },
+      })),
+    });
+    const result = stream.result.catch((error: unknown) => error);
+    try {
+      await reading;
+      controller.abort();
+      await Promise.resolve();
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(await result).toBeInstanceOf(LocalAbortError);
+      await expect(collect(stream.text)).rejects.toBeInstanceOf(LocalAbortError);
+      expect(stream.state).toBe("disconnected");
+      expect(calls).toHaveLength(1);
+      expect(String(calls[0]?.input)).toBe(baseURL);
+    } finally {
+      stalledBody?.error(new Error("test cleanup"));
+    }
+  });
+
+  it("does not process a buffered terminal frame after a callback detaches the reader", async () => {
+    const controller = new AbortController();
+    const stream = createDurableStream({
+      url: baseURL,
+      body: requestBody(),
+      signal: controller.signal,
+      onWarning: () => controller.abort(),
+      fetch: async () => sseResponse([joinFrames(
+        frame("streamweld.stream.open", "1", open),
+        frame("streamweld.stream.warning", "2", { code: "notice", message: "detach now" }),
+        frame("streamweld.stream.done", "3", { finish_reason: "stop", usage }),
+      )], id),
+    });
+    await expect(stream.result).rejects.toBeInstanceOf(LocalAbortError);
+    expect(stream.state).toBe("disconnected");
+  });
+
+  it("cancels an error response body returned after the caller already detached", async () => {
+    const controller = new AbortController();
+    const cancel = vi.fn();
+    const fetcher = vi.fn(async () => {
+      controller.abort();
+      return new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const stream = createDurableStream({
+      url: baseURL,
+      body: requestBody(),
+      signal: controller.signal,
+      fetch: fetcher,
+    });
+    await expect(stream.result).rejects.toBeInstanceOf(LocalAbortError);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("yields a terminal error event while text throws a typed generation error", async () => {

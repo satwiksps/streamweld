@@ -56,6 +56,16 @@ The full local gate is `make ci`. Some checks require Docker, Redis, kind, or
 platform tooling; run every check relevant to the files you changed and state
 clearly in the pull request when an environment prevented a check.
 
+For client changes, build the package and run its real HTTP runtime checks:
+
+```sh
+pnpm --filter @streamweld/client run build
+pnpm --filter @streamweld/client run test:runtime
+```
+
+These checks take about 30 seconds and exercise reader cancellation after
+garbage collection. CI runs them on Node 20, 22, and 24 before releases.
+
 ## Making a change
 
 1. Fork the repository and create a topic branch from the current `main`.
