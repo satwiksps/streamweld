@@ -146,9 +146,9 @@ export class StreamweldChatTransport<
     const messages = options.messages.map(toOpenAIMessage);
     const model = readModel(requestBody.model ?? configuredBody?.model ?? this.#model);
     const body: Record<string, unknown> = {
-      model,
       ...configuredBody,
       ...requestBody,
+      model,
       messages,
       stream: true,
     };
@@ -332,6 +332,9 @@ export class StreamweldChatTransport<
             controller.enqueue(next.value);
           }
         } catch (error) {
+          // An adapter failure ends this local reader too. Keep the generation
+          // and checkpoint available for explicit stop or later reconnection.
+          active.abortController.abort(error);
           if (error instanceof StreamExpiredError) {
             removeCheckpoint();
           }

@@ -15,7 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-const defaultDrainFanoutConcurrency = 8
+const (
+	defaultDrainFanoutConcurrency = 8
+	drainResponseGracePeriod      = 2 * time.Second
+)
 
 // PodDrainFanoutConfig configures a bounded operator-to-proxy drain broadcast.
 type PodDrainFanoutConfig struct {
@@ -70,7 +73,7 @@ func NewPodDrainFanout(config PodDrainFanoutConfig) (*PodDrainFanout, error) {
 	if config.HTTPClient != nil {
 		*client = *config.HTTPClient
 	}
-	client.Timeout = config.Timeout + 2*time.Second
+	client.Timeout = config.Timeout + drainResponseGracePeriod
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &PodDrainFanout{
 		discovery: config.Discovery, client: client, bearerToken: config.BearerToken,
@@ -95,6 +98,10 @@ func (fanout *PodDrainFanout) DrainPod(ctx context.Context, namespace, name stri
 	if messages := validation.IsDNS1123Subdomain(name); len(messages) != 0 {
 		return result, errors.New("operator drain: invalid Pod name")
 	}
+	// Bound discovery and all worker batches together so a large replica set
+	// cannot outlive the lifecycle hook's HTTP response and termination budget.
+	ctx, cancel := context.WithTimeout(ctx, fanout.timeout+drainResponseGracePeriod)
+	defer cancel()
 	endpoints, err := fanout.endpoints(ctx, true)
 	if err != nil {
 		return result, err

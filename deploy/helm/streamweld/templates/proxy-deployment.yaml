@@ -12,10 +12,15 @@ spec:
   {{- end }}
   revisionHistoryLimit: 3
   strategy:
+    {{- if eq .Values.journal.backend "memory" }}
+    # Memory journals cannot be shared between old and new proxy processes.
+    type: Recreate
+    {{- else }}
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
       maxSurge: 1
+    {{- end }}
   selector:
     matchLabels:
       {{- include "streamweld.proxySelectorLabels" . | nindent 6 }}

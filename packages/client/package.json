@@ -1,6 +1,6 @@
 {
   "name": "@streamweld/client",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Dependency-free durable streaming client for Streamweld",
   "keywords": [
     "llm",

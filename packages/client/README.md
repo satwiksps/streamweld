@@ -45,7 +45,8 @@ JavaScript numbers. Transport failures reconnect to the same stream with the
 last committed `Last-Event-ID`. An initial POST is protected by one generated
 idempotency key, reused across pre-header retries. `410 Gone` and an in-band
 retention-gap error throw `StreamExpiredError`; the client never starts a new
-generation silently.
+generation silently. The retry budget resets when the durable cursor advances;
+repeated delivery of already processed events does not extend it.
 
 ## Stop is not abort
 
@@ -54,6 +55,10 @@ remote generation. By contrast, the `signal` option only detaches this local
 HTTP connection. It never calls the stop endpoint, and the identified stream
 remains resumable from another client or a persisted checkpoint. Local detach
 rejects with `LocalAbortError`, whose `name` is `AbortError`.
+
+The stop request has a 30-second timeout covering both headers and the response
+body. A timeout rejects with `StreamTransportError`; it does not prove whether
+the server committed the stop, so the caller may retry `stop()`.
 
 Protocol termination resolves `stream.result` to a discriminated `done`,
 `stopped`, or `error` outcome. The text view ends for `done`/`stopped` and throws

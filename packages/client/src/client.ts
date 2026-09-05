@@ -76,7 +76,6 @@ interface Deferred<T> {
 
 interface ResponseReadResult {
   readonly terminal: boolean;
-  readonly sawFrame: boolean;
 }
 
 class RetryableReaderError extends Error {}
@@ -157,20 +156,20 @@ class DurableStreamImplementation implements DurableStream {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
-    let response: Response;
     try {
-      response = await this.#options.fetch(url, this.#requestInit("POST", headers, controller.signal));
+      const response = await this.#options.fetch(url, this.#requestInit("POST", headers, controller.signal));
+      if (!response.ok) throw await decodeHTTPError(response, this.#options.maxErrorBytes, id);
+      const raw = await readBoundedText(response, this.#options.maxErrorBytes);
+      return decodeStopResult(raw, id);
     } catch (error) {
       if (controller.signal.aborted) {
         throw new StreamTransportError("stop request timed out", 1, { cause: error });
       }
+      if (error instanceof StreamHTTPError || error instanceof StreamProtocolError) throw error;
       throw new StreamTransportError("stop request failed", 1, { cause: error });
     } finally {
       clearTimeout(timeout);
     }
-    if (!response.ok) throw await decodeHTTPError(response, this.#options.maxErrorBytes, id);
-    const raw = await readBoundedText(response, this.#options.maxErrorBytes);
-    return decodeStopResult(raw, id);
   }
 
   async #run(): Promise<void> {
@@ -197,12 +196,25 @@ class DurableStreamImplementation implements DurableStream {
         response = await this.#connect(isResume);
       } catch (error) {
         this.#throwIfAborted(error);
+        if (error instanceof StreamProtocolError) throw error;
         failures = await this.#retry(failures, error);
         continue;
       }
 
-      const responseID = response.headers.get("X-Streamweld-Stream-Id");
-      if (responseID !== null) this.#setID(responseID);
+      try {
+        const responseID = response.headers.get("X-Streamweld-Stream-Id");
+        if (responseID !== null) this.#setID(responseID);
+        if (response.ok) this.#validateStreamingResponse(response, isResume);
+      } catch (error) {
+        // Rejecting headers still owns the response body and must release its
+        // connection, including failures while persisting the stream identity.
+        try {
+          await response.body?.cancel();
+        } catch {
+          // Preserve the validation failure if the connection already failed.
+        }
+        throw error;
+      }
       if (!response.ok) {
         const failure = await decodeHTTPError(response, this.#options.maxErrorBytes, this.#id);
         if (isRetryableStatus(response.status) && !(failure instanceof StreamExpiredError)) {
@@ -212,13 +224,12 @@ class DurableStreamImplementation implements DurableStream {
         throw failure;
       }
 
-      this.#validateStreamingResponse(response, isResume);
       this.#state = "streaming";
       this.#connectionEventCount = 0;
       try {
         const read = await this.#readResponse(response);
         if (read.terminal) return;
-        if (read.sawFrame || compareSequences(this.#lastSequence, cursorBefore) > 0) failures = 0;
+        if (compareSequences(this.#lastSequence, cursorBefore) > 0) failures = 0;
         if (this.#durability === "degraded" && this.#id === null) {
           throw new StreamTransportError(
             "the degraded stream disconnected and has no resumable identity",
@@ -311,7 +322,6 @@ class DurableStreamImplementation implements DurableStream {
     if (response.body === null) throw new RetryableReaderError("SSE response has no body");
     const reader = response.body.getReader();
     const parser = new IncrementalSSEParser(this.#options.maxEventBytes);
-    let sawFrame = false;
     let shouldCancel = true;
     try {
       while (true) {
@@ -321,25 +331,23 @@ class DurableStreamImplementation implements DurableStream {
           break;
         }
         for (const frame of parser.push(read.value)) {
-          sawFrame = true;
           if (this.#handleFrame(frame)) {
             await cancelReader(reader);
             shouldCancel = false;
-            return { terminal: true, sawFrame };
+            return { terminal: true };
           }
           await Promise.resolve();
         }
       }
       for (const frame of parser.finish()) {
-        sawFrame = true;
         if (this.#handleFrame(frame)) {
           await cancelReader(reader);
           shouldCancel = false;
-          return { terminal: true, sawFrame };
+          return { terminal: true };
         }
         await Promise.resolve();
       }
-      return { terminal: false, sawFrame };
+      return { terminal: false };
     } finally {
       if (shouldCancel) {
         await cancelReader(reader);

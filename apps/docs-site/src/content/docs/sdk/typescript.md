@@ -41,6 +41,9 @@ a lost initial response cannot create a second generation.
 
 Call `await stream.stop()` only when the user intends to cancel generation. An
 `AbortSignal` detaches this reader and leaves the producer resumable.
+The stop request times out after 30 seconds, including its response body. A
+`StreamTransportError` does not establish whether the remote stop completed;
+retrying `stop()` is safe.
 
 ## Persist across page reloads
 
@@ -64,6 +67,16 @@ their own store can pass `resumeFrom: { id, lastEventId }`.
 
 ```sh
 npm install @streamweld/ai-sdk ai@^5
+```
+
+The [adapter installation notes](https://github.com/satwiksps/streamweld/blob/main/packages/ai-sdk/README.md)
+cover strict TypeScript declaration dependencies and the tested npm dependency
+override for AI SDK v5.
+
+For React's `useChat`, also install the v2 integration:
+
+```sh
+npm install @ai-sdk/react@^2
 ```
 
 Change the `useChat` transport:

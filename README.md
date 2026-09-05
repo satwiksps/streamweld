@@ -22,8 +22,9 @@ journal, and an exact resume cursor that can outlive a reader connection or
 backend attempt.
 
 > [!IMPORTANT]
-> The current release is `v0.1.0`. APIs and `v1alpha1` Kubernetes resources may
-> change during the 0.x release series.
+> The current release is `v1.0.0`. The HTTP/SSE protocol and public TypeScript
+> APIs follow semantic versioning. Kubernetes `v1alpha1` resources remain
+> experimental.
 
 ## Install
 
@@ -33,7 +34,7 @@ Install the proxy and operator into Kubernetes with Helm:
 helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
   --namespace streamweld-system \
   --create-namespace \
-  --version 0.1.0 \
+  --version 1.0.0 \
   --wait --timeout 3m
 ```
 
@@ -46,7 +47,7 @@ npm install @streamweld/ai-sdk ai@^5
 
 Prebuilt `streamweld-proxy`, `streamweld-operator`, and `streamweldctl` archives
 for Linux, macOS, and Windows are available from
-[GitHub Releases](https://github.com/satwiksps/streamweld/releases/tag/v0.1.0).
+[GitHub Releases](https://github.com/satwiksps/streamweld/releases/tag/v1.0.0).
 
 ## Why Streamweld
 
@@ -75,7 +76,7 @@ backends and rollout draining without reading prompts or generated text.
 
 ## Run from source
 
-Requirements: Go 1.25+, Node.js 20.19+, and pnpm 11.19.
+Requirements: Go 1.25+, Node.js 22.12+, pnpm 11.19, and GNU Make 4+.
 
 ```sh
 git clone https://github.com/satwiksps/streamweld.git
@@ -83,6 +84,46 @@ cd streamweld
 make bootstrap
 make test
 ```
+
+Without Make, use `go mod download`, `pnpm install --frozen-lockfile`,
+`go test ./...`, and `pnpm test` directly.
+
+### Try a stream locally
+
+The repository includes a deterministic CPU-only backend for testing. With Go
+installed, run it in one terminal and the proxy in another:
+
+```sh
+go run ./test/chaos/backend
+```
+
+```sh
+go run ./cmd/streamweld-proxy --backend http://127.0.0.1:8000 --listen 127.0.0.1:8080
+```
+
+From a third terminal, open a stream and display its response headers:
+
+```sh
+curl -i -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"streamweld/deterministic-chaos","messages":[{"role":"user","content":"Count steadily."}],"max_tokens":2048,"stream":true}'
+```
+
+In PowerShell 7, use `curl.exe` and put each curl command on one line, removing
+the trailing backslashes. Copy the
+`X-Streamweld-Stream-Id` response header and an SSE `id:` value. Interrupting
+curl detaches the reader; generation continues. Replace `STREAM_ID` and `CURSOR`
+below to replay events strictly after that cursor, then follow the live stream:
+
+```sh
+curl -N http://127.0.0.1:8080/v1/streams/STREAM_ID/events -H 'Last-Event-ID: CURSOR'
+curl -X POST http://127.0.0.1:8080/v1/streams/STREAM_ID/stop
+```
+
+Run stop from another terminal while generation is active. The default memory
+journal supports reconnects while this proxy process lives; restart loses its
+streams. This fixture checks protocol behavior and does not establish real-model
+migration compatibility. Stop both Go processes with Ctrl+C when finished.
 
 Run the CPU-only Kubernetes end-to-end path with Docker, kind, `kubectl`, and
 Helm installed:

@@ -74,6 +74,10 @@ const stopped = await stream.stop();
 It does not call the stop endpoint, so the generation remains available for a
 later resume.
 
+The stop request times out after 30 seconds, including reading its response
+body, and rejects with `StreamTransportError`. A timed-out stop may already
+have reached the server; calling `stop()` again is safe.
+
 ### Resume after a reload
 
 Pass an explicit checkpoint when application state already contains one:
@@ -104,8 +108,19 @@ const stream = createDurableStream({
 stores. A local detach rejects with `LocalAbortError`, reconnect exhaustion
 rejects with `StreamTransportError` and its attempt count, and retention
 failures reject with `StreamExpiredError` and the server's `expirationCode`.
+Only advancing the durable cursor resets the retry budget; duplicate replay
+frames do not keep a disconnected stream retrying indefinitely.
 
 ## Vercel AI SDK v5
+
+See the [adapter installation notes](../packages/ai-sdk/README.md) for strict
+TypeScript declaration dependencies and the tested npm dependency override.
+
+For React's `useChat`, install the compatible v2 integration:
+
+```sh
+npm install @ai-sdk/react@^2
+```
 
 Replace the transport in an existing `useChat` call:
 

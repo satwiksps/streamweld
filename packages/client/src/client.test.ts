@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   LocalAbortError,
@@ -30,6 +30,44 @@ const open = {
 };
 
 describe("createDurableStream", () => {
+  it("reports a missing request body without transport retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn();
+      const stream = createDurableStream({ url: baseURL, fetch: fetcher });
+      const result = stream.result.catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      expect(await result).toMatchObject({
+        name: "StreamProtocolError",
+        message: "body is required to start a new durable stream",
+      });
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("exhausts retries when reconnects only replay already committed events", async () => {
+    let calls = 0;
+    const stream = createDurableStream({
+      url: baseURL,
+      resumeFrom: { id, lastEventId: "2" },
+      resume: { maxAttempts: 2, backoff: { initialMs: 0, maxMs: 0 } },
+      fetch: async () => {
+        calls += 1;
+        // Bound the broken implementation too, so this regression never hangs.
+        if (calls > 4) return new Response("", { status: 400 });
+        return sseResponse([frame("message", "2", chatChunk("duplicate"))], id);
+      },
+    });
+    await expect(stream.result).rejects.toMatchObject({
+      name: "StreamTransportError",
+      attempts: 3,
+    });
+    expect(calls).toBe(3);
+    await expect(collect(stream.text)).rejects.toBeInstanceOf(StreamTransportError);
+  });
+
   it("multicasts one pump to typed events and text with callbacks and a done outcome", async () => {
     const wire = joinFrames(
       frame("streamweld.stream.open", "1", open),
@@ -316,6 +354,42 @@ describe("createDurableStream", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it.each([202, 503])("times out a stalled stop response body after HTTP %s", async (status) => {
+    vi.useFakeTimers();
+    const stopSignals: AbortSignal[] = [];
+    let stalledBody: ReadableStreamDefaultController<Uint8Array> | undefined;
+    try {
+      const stream = createDurableStream({
+        url: baseURL,
+        resumeFrom: { id, lastEventId: "2" },
+        fetch: async (input, init) => {
+          if (!String(input).endsWith("/stop")) return sseResponse(["data: [DONE]\n\n"], id);
+          const stopSignal = init?.signal;
+          if (!stopSignal) throw new Error("stop request is missing its timeout signal");
+          stopSignals.push(stopSignal);
+          return new Response(new ReadableStream<Uint8Array>({
+            start(controller) {
+              stalledBody = controller;
+              stopSignal.addEventListener("abort", () => controller.error(stopSignal.reason), { once: true });
+            },
+          }), { status });
+        },
+      });
+      await stream.result;
+      const stopResult = stream.stop();
+      const failure = stopResult.catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(stopSignals[0]?.aborted).toBe(true);
+      expect(await failure).toMatchObject({
+        name: "StreamTransportError",
+        message: "stop request timed out",
+      });
+    } finally {
+      stalledBody?.error(new Error("test cleanup"));
+      vi.useRealTimers();
+    }
+  });
+
   it("yields a terminal error event while text throws a typed generation error", async () => {
     const stream = createDurableStream({
       url: baseURL,
@@ -473,6 +547,23 @@ describe("createDurableStream", () => {
     });
     await expect(stream.result).rejects.toBeInstanceOf(StreamProtocolError);
     expect(canceled).toBe(1);
+  });
+
+  it.each([
+    { "Content-Type": "text/plain" },
+    { "X-Streamweld-Durability": "unknown" },
+    { "X-Streamweld-Stream-Id": "invalid" },
+  ])("cancels the unread response when headers are invalid: %j", async (invalidHeaders) => {
+    const cancel = vi.fn();
+    const headers = streamHeaders(id);
+    for (const [name, value] of Object.entries(invalidHeaders)) headers.set(name, value);
+    const stream = createDurableStream({
+      url: baseURL,
+      body: requestBody(),
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({ cancel }), { headers }),
+    });
+    await expect(stream.result).rejects.toBeInstanceOf(StreamProtocolError);
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it("cancels a reader-error body before reconnecting", async () => {

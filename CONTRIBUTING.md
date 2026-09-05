@@ -30,7 +30,7 @@ the issue tracker is reserved for actionable defects and proposals. See
 The supported development toolchain is:
 
 - Go 1.25 or newer (the repository selects the patched Go 1.26.6 toolchain);
-- Node.js 20 or newer;
+- Node.js 22.12 or newer (Node 24 is used in CI);
 - pnpm 11 (the exact package-manager version is declared in `package.json`);
 - GNU Make 4 or newer;
 - Docker, kind, kubectl, and Helm for cluster tests; and
@@ -41,6 +41,10 @@ Bootstrap locked dependencies from the repository root:
 ```sh
 make bootstrap
 ```
+
+On Windows without GNU Make, run `go mod download` and
+`pnpm install --frozen-lockfile` directly. The root Node requirement includes
+the documentation builder; the published client packages support Node 20+.
 
 Run the ordinary unit suites with:
 

@@ -17,9 +17,10 @@ exact resume cursor.
 
 !!! note "Current release"
 
-    Streamweld `v0.1.0` is available as versioned binaries, container images, a
-    Helm OCI chart, and TypeScript packages. APIs and `v1alpha1` resources may
-    change during the 0.x release series.
+    Streamweld `v1.0.0` is available as versioned binaries, container images, a
+    Helm OCI chart, and TypeScript packages. The HTTP/SSE protocol and public
+    TypeScript APIs follow semantic versioning. Kubernetes `v1alpha1` resources
+    remain experimental.
 
 ```mermaid
 flowchart TB
@@ -68,7 +69,7 @@ between them: stream identity, ordered events, replay, and guarded continuation.
 helm upgrade --install streamweld oci://ghcr.io/satwiksps/charts/streamweld \
   --namespace streamweld-system \
   --create-namespace \
-  --version 0.1.0 \
+  --version 1.0.0 \
   --wait --timeout 3m
 ```
 

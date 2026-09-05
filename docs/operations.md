@@ -21,6 +21,9 @@ streamweldctl drain \
 
 The equivalent HTTP path is
 `POST /internal/backends/by-pod/{namespace}/{pod}/drain` on operator port 8082.
+The operator also accepts `GET` at this path for Kubernetes `httpGet` lifecycle
+hooks. Both methods require an empty body. Discovery and all proxy requests
+share a deadline of `operator.drain.timeout` plus two seconds for responses.
 `200 OK` means every proxy acknowledged `in_flight: 0`. `504 Gateway Timeout`
 reports an aggregate remaining count; `503 Service Unavailable` means endpoint
 discovery or at least one proxy acknowledgement failed. All successful local
@@ -38,11 +41,17 @@ refusal warning followed by a terminal error; its lease is not released before
 that error is committed.
 
 The pre-stop budget must cover the drain request and ordinary process exit.
-With Streamweld, set `terminationGracePeriodSeconds: 15`, not 300. The Helm
-hook calls the operator barrier. The drain listener is intentionally
-unauthenticated because Kubernetes HTTP lifecycle hooks cannot attach a bearer
-token. Keep the chart NetworkPolicy enabled and do not expose port 8082 outside
-the trusted namespace. Operator-to-proxy drain fan-out is bearer authenticated.
+The sample uses `terminationGracePeriodSeconds: 15` with the default ten-second
+drain wait. The optional mutator also sets a fixed fifteen-second grace period;
+use an explicit hook with mutation disabled when the backend needs longer.
+The injected HTTP hook calls the operator barrier from kubelet on the node;
+node DNS and networking must reach the operator Service. Use an in-container
+exec hook as in the sample when nodes cannot resolve Service DNS names.
+HTTP lifecycle headers cannot reference Kubernetes Secrets, so the injected
+hook avoids embedding an admin credential in the Pod specification and calls
+the unauthenticated listener. Keep the chart NetworkPolicy enabled and do not
+expose port 8082 outside trusted namespaces. Operator-to-proxy drain fanout is
+bearer authenticated.
 Reproducible rollout measurements are maintained with
 the chaos harness; deployment documentation does not publish an unmeasured
 savings number.
@@ -130,6 +139,9 @@ the Redis journal; memory journals are single-replica only.
 Its bounded ring, idempotency bindings, and active producer ownership cannot be
 shared across processes and are lost on process exit. Do not run multiple
 memory-mode replicas behind a load balancer, including with sticky sessions.
+The chart uses `Recreate` updates for this mode to prevent old and new processes
+from serving independent journals simultaneously. Updates interrupt service
+and discard the previous process's journal.
 
 ### Redis journal
 
@@ -147,6 +159,11 @@ each independent Streamweld installation sharing a Redis database. A terminal
 stream and its idempotency binding remain available for `journal.ttl`. Redis
 URLs may use `redis`, `rediss`, or `unix`; use `rediss` unless transport security
 is provided by a trusted private network or sidecar.
+
+The chart's embedded Redis is one standalone server and uses `Recreate`
+updates, including when persistence is disabled. Updates interrupt Redis
+availability; without persistence, replacing the Pod discards its journal.
+Use an externally managed Redis for deployments that require Redis failover.
 
 Treat a credential-bearing Redis URL as a secret. Inject
 `STREAMWELD_REDIS_URL` from a secret store instead of putting it in
