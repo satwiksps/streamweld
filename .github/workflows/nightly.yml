@@ -25,7 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - uses: helm/kind-action@v1.14.0
+      - uses: helm/kind-action@v1.15.0
         with:
           install_only: true
       - uses: azure/setup-helm@v5.0.1
