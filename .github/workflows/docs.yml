@@ -34,10 +34,10 @@ jobs:
       READTHEDOCS_CANONICAL_URL: https://streamweld.readthedocs.io/en/latest/
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
-      - uses: actions/setup-python@v6.0.0
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
           cache: pip
