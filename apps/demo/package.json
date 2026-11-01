@@ -14,15 +14,15 @@
     "typecheck": "tsc --project tsconfig.json"
   },
   "dependencies": {
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.53.1",
-    "@cloudflare/workers-types": "5.20260820.1",
+    "@cloudflare/vite-plugin": "1.66.0",
+    "@cloudflare/workers-types": "5.20261029.1",
     "@openai/sites-vite-plugin": "0.2.0",
     "@tailwindcss/vite": "4.3.3",
     "tailwindcss": "4.3.3",
-    "wrangler": "4.125.0"
+    "wrangler": "4.156.0"
   }
 }
